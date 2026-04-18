@@ -1,6 +1,6 @@
 # Feather Molt Analysis Pipeline
 
-A distributed feather segmentation pipeline for Apple Silicon nodes using Celery workers and a Redis-backed task queue.
+A distributed feather segmentation pipeline for Apple Silicon systems using Celery workers and a Redis-backed task queue.
 
 ## Project Structure
 - `data/raw/`: Input feather `.jpg` files.
@@ -14,7 +14,7 @@ A distributed feather segmentation pipeline for Apple Silicon nodes using Celery
 1. Run `./setup_env.sh`
 2. Activate env: `conda activate feather_env`
 
-## Cluster Run (4 nodes)
+## Cluster Run (4 Apple Silicon systems)
 1. Ensure your SSH key and host IPs in `run_cluster.sh` are correct.
 2. Place all feather images in `data/raw/`.
 3. Launch cluster + pipeline:
@@ -28,7 +28,7 @@ A distributed feather segmentation pipeline for Apple Silicon nodes using Celery
 - Worker logs on each node: `celery_worker.log`
 
 ## Run From Nebari (No Local Image Mirror)
-You can run orchestration from a Nebari-hosted notebook/kernel while keeping data and model execution on nodes.
+You can run orchestration from a Nebari-hosted notebook/kernel while keeping data and model execution on Apple Silicon systems.
 
 1. Point the notebook kernel to the cluster broker/backend:
    ```bash
