@@ -39,3 +39,5 @@ install_grafana_dashboards_final6.sh
 /sam3*.pt
 /sam2*.pt
 /yolo*.pt
+# ultralytics creates runs/<task>/predict even when not saving
+/runs/

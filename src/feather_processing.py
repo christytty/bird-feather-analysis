@@ -6,6 +6,10 @@ import re
 import tempfile
 from dataclasses import dataclass
 
+# conda-forge's torchvision has no Metal kernel for nms (used by SAM 3 and the
+# box NMS below); let those few ops run on the CPU instead of failing.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import cv2
 import numpy as np
 import torch
@@ -56,6 +60,10 @@ class FeatherProcessor:
                 "task": "segment",
                 "mode": "predict",
                 "model": weights,
+                # SAM 3's native resolution; ultralytics' default 640 loses fine feather edges
+                "imgsz": int(os.getenv("FEATHER_SAM3_IMGSZ", "1008")),
+                "device": "mps" if torch.backends.mps.is_available() else "cpu",
+                "save": False,
                 "verbose": False,
             })
         elif self.segmenter == "dino_sam2":

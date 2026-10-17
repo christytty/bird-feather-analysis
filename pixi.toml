@@ -53,10 +53,14 @@ r-jsonlite = "*"
 r-sf = "*"
 r-farver = "*"
 r-lifecycle = "*"
+# torch from conda-forge, not the PyPI wheel: the wheel bundles its own OpenMP,
+# and two OpenMP runtimes in one process crash SAM 3 on macOS
+pytorch = "*"
+torchvision = "*"
+# conda-forge pytorch pulls fsspec; mlx-vlm -> datasets caps it
+fsspec = "<=2026.6.0"
 
 [pypi-dependencies]
-torch = "*"
-torchvision = "*"
 transformers = "*"
 ultralytics = ">=8.4.180"
 open_clip_torch = "*"
@@ -72,10 +76,6 @@ clip = { git = "https://github.com/ultralytics/CLIP.git" }
 
 [target.osx-arm64.pypi-dependencies]
 mlx-vlm = ">=0.7.8"
-
-# conda-forge's OpenMP and the one bundled in the torch wheel both load on macOS
-[target.osx-arm64.activation.env]
-KMP_DUPLICATE_LIB_OK = "TRUE"
 
 [tasks]
 setup = "Rscript -e 'if (!requireNamespace(\"pavo\", quietly = TRUE)) install.packages(c(\"lightr\", \"pavo\"), repos = \"https://cloud.r-project.org\")'"
