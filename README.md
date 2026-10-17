@@ -78,7 +78,13 @@ pixi install
 pixi run setup     # pavo + lightr from CRAN for the R colour analysis
 pixi run kernel    # registers the "bird-feather-analysis (pixi)" Jupyter kernel
 pixi run check     # broker, workers and SSH access, using .env
+pixi run sync-runs # copy finished runs to Google Drive now; sync-status shows the result
 ```
+
+Finished runs are copied from the head node to the Drive folder
+`Feather_Molt_Project/runs/<run_id>/` every hour (home-lab `feather-sync-runs`).
+Test runs (`max_images` other than `all`, or ids containing test/smoke/debug/tmp) are
+skipped, and Drive folders curated by hand (no `.cluster-sync` marker) are left alone.
 
 Settings come from the environment or a `.env` in the repo root (see `.env.example`).
 On the Coder workspaces the JupyterLab option does all of this on start, and the

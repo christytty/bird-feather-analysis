@@ -7,6 +7,7 @@
 #   pixi run setup       # pavo + lightr from CRAN (not packaged on conda-forge)
 #   pixi run kernel      # register the "bird-feather-analysis (pixi)" Jupyter kernel
 #   pixi run check       # broker + SSH reachability check using .env
+#   pixi run sync-runs   # copy finished runs to Google Drive now (sync-status to check)
 [workspace]
 name = "bird-feather-analysis"
 channels = ["conda-forge"]
@@ -58,3 +59,5 @@ einops = "*"
 setup = "Rscript -e 'if (!requireNamespace(\"pavo\", quietly = TRUE)) install.packages(c(\"lightr\", \"pavo\"), repos = \"https://cloud.r-project.org\")'"
 kernel = "python -m ipykernel install --user --name pixi-bird-feather-analysis --display-name 'bird-feather-analysis (pixi)'"
 check = "python -m src.check_remote"
+sync-runs = "python -m src.sync_runs"
+sync-status = "python -m src.sync_runs status"
