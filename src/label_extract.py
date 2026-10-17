@@ -14,9 +14,9 @@ Every field comes back with a status, so a missing value always says why:
   mismatch_filename  disagrees with the ID/year in the file name -> review
   error           the request failed; this is NOT evidence the label is missing
 
-The VLM runs on the Apple-silicon (MLX) cluster nodes behind an OpenAI-compatible server
-(home-lab feather_vlm_server, http://10.0.0.148:8790), so this works from any
-notebook host without MLX.
+The VLM runs on an Apple-silicon (MLX) node behind an OpenAI-compatible server
+(`pixi run vlm-server`), so this works from any machine. Endpoints come from
+FEATHER_VLM_ENDPOINTS (comma-separated) or configs/label_fields.json.
 
 CLI:
     python -m src.label_extract --sample 10 --seed 1          # random sample
@@ -30,6 +30,7 @@ import base64
 import csv
 import io
 import json
+import os
 import random
 import re
 import sys
@@ -106,7 +107,8 @@ class VLMClient:
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
-        self._endpoints = cycle(cfg["endpoints"])
+        env = [e.strip() for e in os.getenv("FEATHER_VLM_ENDPOINTS", "").split(",") if e.strip()]
+        self._endpoints = cycle(env or cfg["endpoints"])
         self._lock = Lock()
 
     def ask(self, image: Image.Image, prompt: str, timeout: float = 180) -> str:

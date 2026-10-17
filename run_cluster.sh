@@ -1,205 +1,82 @@
 #!/bin/bash
+# Deploy the repo to every node, start the broker, workers and dashboard, and
+# launch the distributed pipeline. Hosts, SSH and broker settings come from
+# .env (see .env.example); each node runs the same pixi environment.
+#
+#   ./run_cluster.sh
+#
+# FEATHER_MANAGE_WORKERS=0 leaves the workers alone (for nodes whose workers are
+# kept running by a service manager); FEATHER_START_REDIS=0 uses an existing broker.
 set -euo pipefail
+# shellcheck source=cluster_env.sh
+. "$(dirname "$0")/cluster_env.sh"
 
-echo "=========================================="
-echo "🚀 STARTING MULTI-NODE CELERY CLUSTER 🚀"
-echo "=========================================="
-
-KEY="~/.ssh/ubuntu-mac-cluster_user-admin"
-USER="cluster_user"
-HEAD_IP="10.0.0.148"
-WORKER_IPS=("10.0.0.63" "10.0.0.19" "10.0.0.118")
-REPO_DIR="~/Feather_Molt_Project"
-PYTHON_BIN="~/miniforge3/envs/feather_env/bin/python"
-PIP_BIN="~/miniforge3/envs/feather_env/bin/pip"
-
-# Dynamically construct SSH options to suppress missing identity file warnings
-# if running directly on a node that doesn't have the key
-SSH_OPTS="-o StrictHostKeyChecking=no"
-eval EXPANDED_KEY="$KEY"
-if [ -f "$EXPANDED_KEY" ]; then
-  SSH_OPTS="-i $KEY $SSH_OPTS"
-fi
-
-BROKER_URL="redis://$HEAD_IP:6379/0"
-RESULT_BACKEND="redis://$HEAD_IP:6379/1"
-WORKER_CONCURRENCY="${WORKER_CONCURRENCY:-1}"
+: "${BROKER_URL:?set BROKER_URL in .env}"
 SYNC_RAW_DATA="${SYNC_RAW_DATA:-1}"
-ENABLE_VLM="${ENABLE_VLM:-1}"
-ENABLE_VLM_SCORING="${ENABLE_VLM_SCORING:-1}"
-ENABLE_VLM_METADATA="${ENABLE_VLM_METADATA:-1}"
-VLM_MODEL="${VLM_MODEL:-mlx-community/Qwen3.8-27B-4bit}"
+MANAGE_WORKERS="${FEATHER_MANAGE_WORKERS:-1}"
+START_REDIS="${FEATHER_START_REDIS:-1}"
 
-sync_env_file() {
-  local ip="$1"
-  scp $SSH_OPTS .env $USER@$ip:$REPO_DIR/.env >/dev/null 2>&1 || true
-}
+echo "== Feather cluster: head $HEAD, ${#NODES[@]} worker node(s)"
 
-echo "1. Preparing HEAD node ($HEAD_IP)..."
-ssh $SSH_OPTS $USER@$HEAD_IP "
-  source ~/miniforge3/etc/profile.d/conda.sh
-  conda activate feather_env >/dev/null 2>&1 || true
-  $PIP_BIN install -q --upgrade pip
-  $PIP_BIN install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam opencv-python python-dotenv 'celery[redis]' flower redis pi-heif
-
-  REDIS_BIN=\"\"
-  if [ -x /opt/homebrew/bin/redis-server ]; then
-    REDIS_BIN=/opt/homebrew/bin/redis-server
-  elif [ -x /usr/local/bin/redis-server ]; then
-    REDIS_BIN=/usr/local/bin/redis-server
-  elif command -v redis-server >/dev/null 2>&1; then
-    REDIS_BIN=\$(command -v redis-server)
-  else
-    if [ -x /opt/homebrew/bin/brew ]; then
-      /opt/homebrew/bin/brew list redis >/dev/null 2>&1 || /opt/homebrew/bin/brew install redis
-    fi
-    if [ -x /opt/homebrew/bin/redis-server ]; then
-      REDIS_BIN=/opt/homebrew/bin/redis-server
-    else
-      conda install -y -n feather_env -c conda-forge redis >/dev/null 2>&1 || true
-      if [ -x ~/miniforge3/envs/feather_env/bin/redis-server ]; then
-        REDIS_BIN=~/miniforge3/envs/feather_env/bin/redis-server
-      fi
-    fi
-  fi
-  if [ -z \"\$REDIS_BIN\" ]; then
-    echo 'redis-server not found on head node after install attempts'
-    exit 1
-  fi
-  echo \"\$REDIS_BIN\" > /tmp/feather_redis_bin_path
-
-  if [ ! -d '$REPO_DIR/.git' ]; then
-    git clone git@github.com:ns-mkusper/birth-feather-thesis.git '$REPO_DIR' >/dev/null 2>&1
-  fi
-  cd '$REPO_DIR' && git fetch origin && git reset --hard origin/main >/dev/null 2>&1
-
-  pkill -f 'src/full_run_distributed.py' >/dev/null 2>&1 || true
-  pkill -f 'celery -A src.celery_app worker' >/dev/null 2>&1 || true
-  pkill -f 'celery -A src.celery_app flower' >/dev/null 2>&1 || true
-  pkill -f 'redis-server .*feather_redis.conf' >/dev/null 2>&1 || true
-"
-
-sync_env_file "$HEAD_IP"
-
-echo "2. Preparing WORKER nodes..."
-for ip in "${WORKER_IPS[@]}"; do
-  echo "   -> $ip"
-  ssh $SSH_OPTS $USER@$ip "
-    if [ ! -d '~/miniforge3' ]; then
-      curl -sL https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh -o miniforge.sh
-      bash miniforge.sh -b -p ~/miniforge3 >/dev/null 2>&1
-      rm miniforge.sh
-    fi
-
-    source ~/miniforge3/etc/profile.d/conda.sh
-    if ! conda env list | grep -q 'feather_env'; then
-      conda create -y -n feather_env -c conda-forge python=3.10 >/dev/null 2>&1
-    fi
-    conda activate feather_env
-
-    ~/miniforge3/envs/feather_env/bin/pip install -q --upgrade pip
-    ~/miniforge3/envs/feather_env/bin/pip install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam opencv-python python-dotenv 'celery[redis]' flower redis pi-heif
-
-    if [ ! -d '$REPO_DIR/.git' ]; then
-      git clone git@github.com:ns-mkusper/birth-feather-thesis.git '$REPO_DIR' >/dev/null 2>&1
-    fi
-    cd '$REPO_DIR' && git fetch origin && git reset --hard origin/main >/dev/null 2>&1
-
-    pkill -f 'celery -A src.celery_app worker' >/dev/null 2>&1 || true
-    pkill -f 'src/full_run_distributed.py' >/dev/null 2>&1 || true
-  " &
-  sync_env_file "$ip"
+echo "1. Preparing nodes (repo, pixi environment, .env)..."
+for n in "${NODES[@]}"; do
+  ( node_prepare "$n" && echo "   -> $n ready" ) &
 done
 wait
 
-if [ "$SYNC_RAW_DATA" = "1" ]; then
-  echo "2b. Syncing raw dataset from HEAD to workers (if needed)..."
-  HEAD_RAW_COUNT=$(ssh $SSH_OPTS $USER@$HEAD_IP "find '$REPO_DIR/data/raw' -maxdepth 1 -type f | wc -l")
-  for ip in "${WORKER_IPS[@]}"; do
-    WORKER_RAW_COUNT=$(ssh $SSH_OPTS $USER@$ip "find '$REPO_DIR/data/raw' -maxdepth 1 -type f 2>/dev/null | wc -l")
-    if [ "$WORKER_RAW_COUNT" = "$HEAD_RAW_COUNT" ]; then
-      echo "   -> $ip already has $WORKER_RAW_COUNT raw files"
+if [ "$SYNC_RAW_DATA" = "1" ] && [ "${#WORKERS[@]}" -gt 0 ]; then
+  echo "2. Syncing raw images from the head to workers (when counts differ)..."
+  head_count=$(node_ssh "$HEAD" "find $REPO_DIR/data/raw -maxdepth 1 -type f | wc -l" | tr -d ' ')
+  for n in "${WORKERS[@]}"; do
+    count=$(node_ssh "$n" "find $REPO_DIR/data/raw -maxdepth 1 -type f 2>/dev/null | wc -l" | tr -d ' ')
+    if [ "$count" = "$head_count" ]; then
+      echo "   -> $n already has $count images"
       continue
     fi
-    echo "   -> syncing raw data to $ip ($WORKER_RAW_COUNT -> $HEAD_RAW_COUNT files)"
-    ssh $SSH_OPTS $USER@$ip "mkdir -p '$REPO_DIR/data' && rm -rf '$REPO_DIR/data/raw'"
-    ssh $SSH_OPTS $USER@$HEAD_IP "cd '$REPO_DIR/data' && tar -cf - raw" | \
-      ssh $SSH_OPTS $USER@$ip "cd '$REPO_DIR/data' && tar -xf -"
-    ssh $SSH_OPTS $USER@$ip "find '$REPO_DIR/data/raw' -maxdepth 1 -type f | wc -l"
+    echo "   -> $n: $count -> $head_count images"
+    node_ssh "$n" "mkdir -p $REPO_DIR/data/raw"
+    node_ssh "$HEAD" "cd $REPO_DIR/data && tar -cf - raw" | node_ssh "$n" "cd $REPO_DIR/data && tar -xf -"
   done
 fi
 
-echo "3. Starting Redis on HEAD..."
-ssh $SSH_OPTS $USER@$HEAD_IP "
-  REDIS_BIN=\$(cat /tmp/feather_redis_bin_path)
-  cat > /tmp/feather_redis.conf <<'CONF'
-port 6379
-bind 0.0.0.0
-protected-mode no
-dbfilename feather_dump.rdb
-dir /tmp
-appendonly no
-CONF
-  nohup \$REDIS_BIN /tmp/feather_redis.conf >/tmp/feather_redis.log 2>&1 &
+if [ "$START_REDIS" = "1" ]; then
+  echo "3. Starting the broker on the head..."
+  node_ssh "$HEAD" "
+    cd $REPO_DIR
+    pkill -f 'redis-server .*feather_dump.rdb' >/dev/null 2>&1 || true
+    nohup $PIXI run redis > redis.log 2>&1 < /dev/null &
+  "
+  sleep 2
+fi
+
+if [ "$MANAGE_WORKERS" = "1" ]; then
+  echo "4. (Re)starting workers..."
+  for n in "${NODES[@]}"; do
+    node_ssh "$n" "
+      cd $REPO_DIR
+      pkill -f 'celery -A src.celery_app worker' >/dev/null 2>&1 || true
+      sleep 2
+      nohup $PIXI run worker > celery_worker.log 2>&1 < /dev/null &
+    " &
+  done
+  wait
+fi
+
+echo "5. Starting the Flower dashboard on the head..."
+node_ssh "$HEAD" "
+  cd $REPO_DIR
+  pkill -f 'celery -A src.celery_app flower' >/dev/null 2>&1 || true
+  FLOWER_UNAUTHENTICATED_API=true nohup $PIXI run flower > flower.log 2>&1 < /dev/null &
 "
 
-sleep 2
-
-echo "4. Starting Celery workers..."
-ssh $SSH_OPTS $USER@$HEAD_IP "
-  cd '$REPO_DIR'
-  export PYTHONPATH='$REPO_DIR'
-  export BROKER_URL='$BROKER_URL'
-  export RESULT_BACKEND='$RESULT_BACKEND'
-  export FEATHER_ENABLE_VLM='$ENABLE_VLM'
-  export FEATHER_ENABLE_VLM_SCORING='$ENABLE_VLM_SCORING'
-  export FEATHER_ENABLE_VLM_METADATA='$ENABLE_VLM_METADATA'
-  export FEATHER_VLM_MODEL='$VLM_MODEL'
-  nohup script -q /tmp/celery_head_pty.log $PYTHON_BIN -m celery -A src.celery_app worker --pool=threads --without-mingle --loglevel=INFO --concurrency=$WORKER_CONCURRENCY --hostname=head@%h > celery_worker.log 2>&1 < /dev/null & disown
+echo "6. Launching the distributed pipeline on the head..."
+node_ssh "$HEAD" "
+  cd $REPO_DIR
+  pkill -f 'src/full_run_distributed.py' >/dev/null 2>&1 || true
+  nohup $PIXI run python src/full_run_distributed.py > distributed_pipeline.log 2>&1 < /dev/null &
 "
 
-for ip in "${WORKER_IPS[@]}"; do
-  ssh $SSH_OPTS $USER@$ip "
-    cd '$REPO_DIR'
-    export PYTHONPATH='$REPO_DIR'
-    export BROKER_URL='$BROKER_URL'
-    export RESULT_BACKEND='$RESULT_BACKEND'
-    export FEATHER_ENABLE_VLM='$ENABLE_VLM'
-    export FEATHER_ENABLE_VLM_SCORING='$ENABLE_VLM_SCORING'
-    export FEATHER_ENABLE_VLM_METADATA='$ENABLE_VLM_METADATA'
-    export FEATHER_VLM_MODEL='$VLM_MODEL'
-    nohup script -q /tmp/celery_worker_pty.log $PYTHON_BIN -m celery -A src.celery_app worker --pool=threads --without-mingle --loglevel=INFO --concurrency=$WORKER_CONCURRENCY --hostname=worker@%h > celery_worker.log 2>&1 < /dev/null & disown
-  " &
-done
-wait
-
-echo "5. Starting Flower dashboard on HEAD..."
-ssh $SSH_OPTS $USER@$HEAD_IP "
-  cd '$REPO_DIR'
-  export PYTHONPATH='$REPO_DIR'
-  export BROKER_URL='$BROKER_URL'
-  export RESULT_BACKEND='$RESULT_BACKEND'
-  export FLOWER_UNAUTHENTICATED_API=true
-  nohup $PYTHON_BIN -m celery -A src.celery_app flower --address=0.0.0.0 --port=5555 > flower.log 2>&1 &
-"
-
-echo "6. Launching distributed feather pipeline..."
-ssh $SSH_OPTS $USER@$HEAD_IP "
-  cd '$REPO_DIR'
-  export PYTHONPATH='$REPO_DIR'
-  export BROKER_URL='$BROKER_URL'
-  export RESULT_BACKEND='$RESULT_BACKEND'
-  export FEATHER_ENABLE_VLM='$ENABLE_VLM'
-  export FEATHER_ENABLE_VLM_SCORING='$ENABLE_VLM_SCORING'
-  export FEATHER_ENABLE_VLM_METADATA='$ENABLE_VLM_METADATA'
-  export FEATHER_VLM_MODEL='$VLM_MODEL'
-  nohup $PYTHON_BIN src/full_run_distributed.py > distributed_pipeline.log 2>&1 &
-"
-
-echo "=========================================="
-echo "🎉 CELERY CLUSTER DEPLOYED 🎉"
-echo "=========================================="
-echo "Flower dashboard: http://$HEAD_IP:5555"
-echo "Pipeline log (head): $REPO_DIR/distributed_pipeline.log"
-echo "Worker logs: $REPO_DIR/celery_worker.log"
-echo "=========================================="
+echo "== Deployed"
+echo "Flower:        http://$HEAD:5555"
+echo "Pipeline log:  $REPO_DIR/distributed_pipeline.log (head)"
+echo "Worker logs:   $REPO_DIR/celery_worker.log (each node)"

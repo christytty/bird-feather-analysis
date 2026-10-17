@@ -79,11 +79,8 @@ def main():
                     pdf_out = os.path.join(RESULTS_DIR, f"{bird_id}_molt_transition.pdf")
                     r_script_path = os.path.join(BASE_DIR, 'src', 'visualize_transition.R')
                     
-                    env = os.environ.copy()
-                    env['R_HOME'] = '/Library/Frameworks/R.framework/Resources'
-                    env['PATH'] = env['R_HOME'] + '/bin:' + env['PATH']
-                    
-                    subprocess.run(['Rscript', r_script_path, crop1, crop2, pdf_out, bird_id], env=env)
+                    # Rscript comes from the pixi environment.
+                    subprocess.run(['Rscript', r_script_path, crop1, crop2, pdf_out, bird_id])
 
     res_df = pd.DataFrame(results)
     res_df.to_csv(RESULTS_CSV, index=False)

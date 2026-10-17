@@ -1,8 +1,8 @@
 {
-  "_comment": "Regions are fractions of the ORIGINAL slide image: [left, top, right, bottom]. They are deliberately generous because the label shifts a little from slide to slide. 'pattern' validates the normalized value; a value that fails it is kept but marked invalid_format. Edit freely and rerun the lab notebook.",
+  "_comment": "Regions are fractions of the ORIGINAL slide image: [left, top, right, bottom]. They are deliberately generous because the label shifts a little from slide to slide. 'pattern' validates the normalized value; a value that fails it is kept but marked invalid_format. Edit freely and rerun the lab notebook. VLM endpoints can be overridden with FEATHER_VLM_ENDPOINTS in .env.",
   "vlm": {
     "endpoints": [
-      "http://10.0.0.148:8790"
+      "http://localhost:8790"
     ],
     "model": "mlx-community/Qwen3.8-27B-4bit",
     "max_tokens": 120,

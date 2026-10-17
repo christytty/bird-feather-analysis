@@ -1,4 +1,5 @@
 import argparse
+import getpass
 import csv
 import glob
 import json
@@ -38,11 +39,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Pull latest feather previews from each node for a run")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--repo-root", default=".")
-    parser.add_argument("--nodes", default="10.0.0.148,10.0.0.63,10.0.0.19,10.0.0.118")
-    parser.add_argument("--user", default="cluster_user")
+    parser.add_argument("--nodes", default=os.getenv("FEATHER_CLUSTER_HOSTS", os.getenv("FEATHER_HEAD_HOST", "localhost")))
+    parser.add_argument("--user", default=os.getenv("FEATHER_SSH_USER", getpass.getuser()))
     parser.add_argument("--per-node", type=int, default=3)
     parser.add_argument("--max-show", type=int, default=12)
-    parser.add_argument("--key-path", default="")
+    parser.add_argument("--key-path", default=os.getenv("FEATHER_SSH_KEY", ""))
     args = parser.parse_args()
 
     repo_root = os.path.abspath(args.repo_root)

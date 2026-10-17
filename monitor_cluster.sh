@@ -1,17 +1,18 @@
 #!/bin/bash
-echo "=== 🪶 Feather Molt Cluster Monitor ==="
-echo "Initializing ASITOP across unified memory..."
+# Memory pressure on every node, then an interactive asitop on this one
+# (Apple silicon). Nodes come from .env.
+set -uo pipefail
+# shellcheck source=cluster_env.sh
+. "$(dirname "$0")/cluster_env.sh"
 
-# Install asitop locally if missing
-if ! command -v asitop &> /dev/null; then
-    pip install asitop >/dev/null 2>&1
-fi
-
-echo "Worker Nodes Memory Pressure:"
-for ip in 10.0.0.63 10.0.0.19 10.0.0.118; do
-   echo -n "Node $ip: "
-   ssh -i ~/.ssh/ubuntu-mac-cluster_user-admin -o StrictHostKeyChecking=no cluster_user@$ip "vm_stat | grep 'Pages active'" 2>/dev/null || echo "Offline"
+echo "=== Feather cluster monitor ==="
+for n in "${NODES[@]}"; do
+  printf 'Node %s: ' "$n"
+  node_ssh "$n" "if command -v vm_stat >/dev/null; then vm_stat | grep 'Pages active'; else free -h | sed -n 2p; fi" 2>/dev/null || echo "offline"
 done
 echo "----------------------------------------"
-echo "Launching interactive ASITOP Dashboard on Head Node (Press Q to quit)..."
-sudo asitop
+if [ "$(uname -s)" = "Darwin" ]; then
+  command -v asitop >/dev/null 2>&1 || pipx install asitop >/dev/null 2>&1 || pip install --user asitop >/dev/null 2>&1
+  echo "Launching asitop on this node (press q to quit)..."
+  sudo asitop
+fi

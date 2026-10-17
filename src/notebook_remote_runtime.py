@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import getpass
 import os
 import shlex
 import socket
@@ -37,29 +38,22 @@ def _first_existing_path(paths: list[str]) -> str:
 
 
 def load_notebook_config_from_env() -> RemoteNotebookConfig:
-    # Settings may live in the repo's .env (as on Coder workspaces); variables
-    # already set in the environment win.
+    # Settings may live in the repo's .env; variables already set in the
+    # environment win.
     if load_dotenv is not None:
         load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
-    head_host = os.getenv("FEATHER_HEAD_HOST", "10.0.0.148")
-    ssh_user = os.getenv("FEATHER_SSH_USER", "openteams")
+    head_host = os.getenv("FEATHER_HEAD_HOST", "localhost")
+    ssh_user = os.getenv("FEATHER_SSH_USER", getpass.getuser())
+    # Empty means ssh's own defaults (agent, ~/.ssh/id_*).
+    key_path = _first_existing_path([os.path.expanduser(os.getenv("FEATHER_SSH_KEY", ""))])
 
-    key_candidates = [
-        os.path.expanduser(os.getenv("FEATHER_SSH_KEY", "")),
-        os.path.expanduser("~/.ssh/ubuntu-mac-openteams-admin"),
-        os.path.expanduser("~/.ssh/ubuntu-mac-cluster_user-admin"),
-        os.path.expanduser("~/.ssh/id_ed25519"),
-        os.path.expanduser("~/.ssh/llama_watchdog_key"),
-    ]
-    key_path = _first_existing_path(key_candidates)
-
-    remote_repo_dir = os.getenv("FEATHER_REMOTE_REPO_DIR", "~/Feather_Molt_Project")
+    remote_repo_dir = os.getenv("FEATHER_REMOTE_REPO_DIR", "~/bird-feather-analysis")
     remote_input_dir = os.getenv("FEATHER_REMOTE_INPUT_DIR", f"{remote_repo_dir}/data/raw")
     remote_output_dir = os.getenv("FEATHER_REMOTE_OUTPUT_DIR", f"{remote_repo_dir}/data/processed")
 
     cluster_hosts = [
         h.strip()
-        for h in os.getenv("FEATHER_CLUSTER_HOSTS", "10.0.0.148,10.0.0.63,10.0.0.19,10.0.0.118").split(",")
+        for h in os.getenv("FEATHER_CLUSTER_HOSTS", head_host).split(",")
         if h.strip()
     ]
 
@@ -115,22 +109,12 @@ class RemoteClusterIO:
         self._remote_home_cache: dict[str, str] = {}
 
     def _ssh_base_cmd(self, host: str) -> list[str]:
-        cmd = [
-            "ssh",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "IdentitiesOnly=yes",
-            "-o",
-            "IdentityAgent=none",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "PreferredAuthentications=publickey",
-        ]
-        if not self.config.key_path:
-            raise RuntimeError("No SSH key found. Set FEATHER_SSH_KEY to a readable private key path.")
-        cmd += ["-i", self.config.key_path, f"{self.config.ssh_user}@{host}"]
+        cmd = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes",
+               "-o", "PreferredAuthentications=publickey"]
+        if self.config.key_path:
+            # A dedicated key: use only it, not whatever the agent offers.
+            cmd += ["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i", self.config.key_path]
+        cmd.append(f"{self.config.ssh_user}@{host}")
         return cmd
 
     @staticmethod

@@ -21,7 +21,7 @@ def _now_iso() -> str:
 
 
 def _connect_metrics_redis() -> redis.Redis | None:
-    host = os.getenv("FEATHER_METRICS_REDIS_HOST", "10.0.0.148")
+    host = os.getenv("FEATHER_METRICS_REDIS_HOST", os.getenv("FEATHER_HEAD_HOST", "localhost"))
     port = int(os.getenv("FEATHER_METRICS_REDIS_PORT", "6379"))
     db = int(os.getenv("FEATHER_METRICS_REDIS_DB", "2"))
     try:
@@ -398,7 +398,7 @@ def run_shard(
             {
                 "run_id": run_id,
                 "node_id": node_id,
-                "redis": os.getenv("FEATHER_METRICS_REDIS_HOST", "10.0.0.148"),
+                "redis": os.getenv("FEATHER_METRICS_REDIS_HOST", os.getenv("FEATHER_HEAD_HOST", "localhost")),
                 "db": int(os.getenv("FEATHER_METRICS_REDIS_DB", "2")),
             }
         ),

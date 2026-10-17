@@ -8,7 +8,7 @@ Here is the exact, step-by-step guide to get your custom AI up and running:
 
 ### Step 1: Generate the Rough Drafts (Auto-Labeling)
 Instead of starting from scratch, we will use a massive AI (Meta's SAM 2) to take a really good guess at the feather outlines.
-1. Open your Jupyter Lab browser window (`http://10.0.0.148:8889/lab`).
+1. Open your Jupyter Lab browser window (`pixi run jupyter`, then `http://<head-node>:8889/lab`).
 2. At the bottom of the Launcher screen, click **Terminal** to open a black command box.
 3. Type this exact command and hit Enter: 
    `python3 src/prep_annotation_sam2.py`

@@ -1,4 +1,6 @@
 import argparse
+import getpass
+import os
 import json
 import subprocess
 from datetime import datetime, timezone
@@ -11,7 +13,7 @@ def _safe_node_label(node_id: str) -> str:
 def _fetch_node_state(user: str, node: str, metrics_dir: str, run_id: str, key_path: str | None) -> dict | None:
     node_label = _safe_node_label(node)
     state_path = f"{metrics_dir}/{run_id}_{node_label}.json"
-    alt_state_path = f"~/Feather_Molt_Project/data/runs/{run_id}/pipeline_metrics/{run_id}_{node_label}.json"
+    alt_state_path = os.getenv("FEATHER_REMOTE_REPO_DIR", "~/bird-feather-analysis") + f"/data/runs/{run_id}/pipeline_metrics/{run_id}_{node_label}.json"
     ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
     if key_path:
         ssh_cmd.extend(["-i", key_path])
@@ -27,10 +29,10 @@ def _fetch_node_state(user: str, node: str, metrics_dir: str, run_id: str, key_p
 def main() -> None:
     parser = argparse.ArgumentParser(description="Aggregate live pipeline status from node-local metric files")
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--nodes", default="10.0.0.148,10.0.0.63,10.0.0.19,10.0.0.118")
-    parser.add_argument("--user", default="cluster_user")
-    parser.add_argument("--metrics-dir", default="~/Feather_Molt_Project/data/pipeline_metrics")
-    parser.add_argument("--key-path", default="")
+    parser.add_argument("--nodes", default=os.getenv("FEATHER_CLUSTER_HOSTS", os.getenv("FEATHER_HEAD_HOST", "localhost")))
+    parser.add_argument("--user", default=os.getenv("FEATHER_SSH_USER", getpass.getuser()))
+    parser.add_argument("--metrics-dir", default=os.getenv("FEATHER_REMOTE_REPO_DIR", "~/bird-feather-analysis") + "/data/pipeline_metrics")
+    parser.add_argument("--key-path", default=os.getenv("FEATHER_SSH_KEY", ""))
     parser.add_argument("--pretty", action="store_true")
     args = parser.parse_args()
 

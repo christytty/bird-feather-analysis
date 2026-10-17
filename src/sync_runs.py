@@ -1,10 +1,11 @@
-"""Copy finished cluster runs from the head node to Google Drive.
+"""Archive finished cluster runs from the head node.
 
-The head node uploads data/runs/<run_id>/ to the shared Drive folder
-Feather_Molt_Project/runs/<run_id>/, gathering the workers' logs and metrics
-first. Test runs (max_images other than "all", or ids containing test/smoke/
-debug/tmp) and runs without processed images are skipped. It also runs on its
-own every hour; this just starts it now or shows how it went.
+Asks the head node's `sync-runs` command (run over SSH) to copy
+data/runs/<run_id>/ to the run archive, gathering the workers' logs and
+metrics first, or to report how the last sync went. Test runs (max_images
+other than "all", or ids containing test/smoke/debug/tmp) and runs without
+processed images are skipped. The archive target and schedule are configured
+on the head node, not here.
 
     python -m src.sync_runs           # start a sync
     python -m src.sync_runs status    # last result and log lines

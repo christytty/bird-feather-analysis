@@ -1,26 +1,28 @@
-# Linux environment for driving the cluster from a notebook (e.g. a Coder
-# workspace). The Apple-silicon (MLX) nodes that run the workers still use setup_env.sh, which
-# is macOS-only (MLX). Here the heavy models are optional: notebooks submit work
-# to the Celery workers and only run small local steps (BioCLIP heatmap, pavo).
+# One environment for every node of the cluster: the head (broker, dashboard,
+# run orchestration), the workers (segmentation + VLM) and any machine that
+# drives runs from a notebook. Apple-silicon nodes also get MLX for the VLM.
 #
 #   pixi install
-#   pixi run setup       # pavo + lightr from CRAN (not packaged on conda-forge)
-#   pixi run kernel      # register the "bird-feather-analysis (pixi)" Jupyter kernel
-#   pixi run check       # broker + SSH reachability check using .env
-#   pixi run sync-runs   # copy finished runs to Google Drive now (sync-status to check)
-#   pixi run labels -- --sample 10   # label table on a sample (notebooks/label_lab.ipynb)
-#   pixi run sample-run -- --n 5     # small segmentation run on the cluster
+#   pixi run setup        # R packages not on conda-forge (pavo, lightr)
+#   cp .env.example .env  # cluster addresses, broker URL, SSH settings
+#
+# Roles (see README):
+#   pixi run redis        # head: Celery broker
+#   pixi run worker       # each worker node
+#   pixi run flower       # head: dashboard on :5555
+#   pixi run vlm-server   # Apple-silicon node: OpenAI-compatible VLM on :8790
+#   pixi run jupyter      # JupyterLab on :8889
+#   pixi run check        # broker, workers and SSH reachability
 [workspace]
 name = "bird-feather-analysis"
 channels = ["conda-forge"]
-platforms = ["linux-64", "linux-aarch64"]
+# MLX wheels need macOS 14+
+platforms = [{ platform = "osx-arm64", macos = "14.0" }, "linux-64", "linux-aarch64"]
 
 [dependencies]
-python = "3.10.*"
+python = "3.12.*"
 pip = "*"
-ipykernel = "*"
-ipywidgets = "*"
-numpy = "*"
+numpy = ">=2.3.5"
 pandas = "*"
 pillow = "*"
 matplotlib = "*"
@@ -28,10 +30,15 @@ opencv = "*"
 python-dotenv = "*"
 celery = "*"
 redis-py = "*"
+redis-server = "*"
 openssh = "*"
+rsync = "*"
+jupyterlab = "*"
+ipykernel = "*"
+ipywidgets = "*"
+jupyter-resource-usage = "*"
 # R side of the colour analysis (notebooks call Rscript with pavo). pavo and
-# lightr are not on conda-forge; `pixi run setup` installs them from CRAN
-# on top of these dependencies.
+# lightr are not on conda-forge; `pixi run setup` installs them from CRAN.
 r-base = "*"
 r-magick = "*"
 r-geometry = "*"
@@ -48,21 +55,37 @@ r-farver = "*"
 r-lifecycle = "*"
 
 [pypi-dependencies]
-flower = "*"
-pi-heif = "*"
 torch = "*"
 torchvision = "*"
+transformers = "*"
+ultralytics = ">=8.4.180"
 open_clip_torch = "*"
-ultralytics = "*"
 timm = "*"
 einops = "*"
+kornia = "*"
+grad-cam = "*"
+onnxruntime = "*"
+flower = "*"
+pi-heif = "*"
+
+[target.osx-arm64.pypi-dependencies]
+mlx-vlm = ">=0.7.8"
+
+# conda-forge's OpenMP and the one bundled in the torch wheel both load on macOS
+[target.osx-arm64.activation.env]
+KMP_DUPLICATE_LIB_OK = "TRUE"
 
 [tasks]
 setup = "Rscript -e 'if (!requireNamespace(\"pavo\", quietly = TRUE)) install.packages(c(\"lightr\", \"pavo\"), repos = \"https://cloud.r-project.org\")'"
 kernel = "python -m ipykernel install --user --name pixi-bird-feather-analysis --display-name 'bird-feather-analysis (pixi)'"
+redis = "python -m src.node redis"
+worker = "python -m src.node worker"
+flower = "python -m src.node flower"
+vlm-server = "python -m src.node vlm-server"
+jupyter = "python -m src.node jupyter"
 check = "python -m src.check_remote"
 sync-runs = "python -m src.sync_runs"
+sync-status = "python -m src.sync_runs status"
 labels = "python -m src.label_extract"
 labels-all = "python -m src.label_extract --all --workers 4 --out data/label_runs/full"
 sample-run = "python -m src.sample_run"
-sync-status = "python -m src.sync_runs status"

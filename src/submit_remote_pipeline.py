@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import os
 import shlex
 import subprocess
 import time
@@ -62,14 +64,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Dispatch remote image paths to Celery workers without local dataset copies."
     )
-    parser.add_argument("--host", required=True, help="Cluster head host/IP for SSH path discovery")
-    parser.add_argument("--user", default="cluster_user", help="SSH user")
-    parser.add_argument("--key-path", default="", help="Optional SSH private key path")
+    parser.add_argument("--host", default=os.getenv("FEATHER_HEAD_HOST"), help="Cluster head host for SSH path discovery (default FEATHER_HEAD_HOST)")
+    parser.add_argument("--user", default=os.getenv("FEATHER_SSH_USER", getpass.getuser()), help="SSH user")
+    parser.add_argument("--key-path", default=os.getenv("FEATHER_SSH_KEY", ""), help="Optional SSH private key path")
     parser.add_argument("--remote-input-dir", required=True, help="Input dir path as seen on cluster nodes")
     parser.add_argument("--remote-output-dir", required=True, help="Output dir path as seen on cluster nodes")
     parser.add_argument("--max-images", type=int, default=None, help="Optional cap on number of images")
     parser.add_argument("--poll-seconds", type=float, default=5.0, help="Status polling interval")
     args = parser.parse_args()
+    if not args.host:
+        parser.error("--host is required (or set FEATHER_HEAD_HOST)")
 
     paths = _list_remote_images(
         host=args.host,

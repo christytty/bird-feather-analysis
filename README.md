@@ -6,23 +6,22 @@ A distributed feather segmentation pipeline for a scalable cluster of Celery wor
 ```mermaid
 flowchart TB
     A[Ingest Raw Images] --> B[Distribute Work Across Cluster<br/>Celery + Redis]
-    B --> C[Detect Feather Regions<br/>Grounding DINO]
-    C --> D[Generate Pixel Masks<br/>SAM 2.x]
-    D --> E[Extract and Normalize Feather Crops]
-    D --> F[Render QA Overlays<br/>boxes + masks]
-    F --> G[Run Vision-Language QA<br/>score + flags + notes]
+    B --> C[Find and Segment Feathers<br/>SAM 3 text prompts]
+    C --> E[Extract and Normalize Feather Crops]
+    C --> F[Render QA Overlays<br/>boxes + masks]
+    F --> G[Run Vision-Language QA<br/>Qwen3.8: score + flags + notes]
     G --> H[Collect Metrics in SQLite DB]
     H --> I[Live Monitoring and Review]
 ```
 
 1. Ingest slide images and dispatch each image as an independent task to a scalable worker cluster.
-2. Use zero-shot grounding (`Grounding DINO`) with text prompts to propose feather bounding regions without supervised retraining.
-3. Use prompted segmentation (`SAM 2.x`) to convert proposed regions into pixel-level feather masks.
-4. Post-process masks into clean feather crops, apply basic normalization, and persist run outputs.
-5. Generate visual QA overlays and run vision-language assessment (`Qwen3-VL`) to score quality and detect failure modes such as grouped boxes, leakage, or incomplete coverage.
-6. Parse specimen metadata from structured sources first, with VLM fallback when metadata is missing.
-7. Persist per-image outcomes (timings, counts, QA flags, notes, retry decisions) into SQLite for queryable run history.
-8. Drive dashboards and review notebooks from database state so monitoring is tied to recorded pipeline results, not transient filesystem scans.
+2. Find and segment every feather with `SAM 3` concept segmentation from a text prompt ("bird feather").
+   `FEATHER_SEGMENTER=dino_sam2` switches to the original Grounding DINO boxes + SAM 2.1 masks.
+3. Post-process masks into clean feather crops, apply basic normalization, and persist run outputs.
+4. Generate visual QA overlays and run vision-language assessment (`Qwen3.8-27B` on MLX) to score quality and detect failure modes such as grouped boxes, leakage, or incomplete coverage.
+5. Parse specimen metadata from structured sources first, with VLM fallback when metadata is missing.
+6. Persist per-image outcomes (timings, counts, QA flags, notes, retry decisions) into SQLite for queryable run history.
+7. Drive dashboards and review notebooks from database state so monitoring is tied to recorded pipeline results, not transient filesystem scans.
 
 ## Project Structure
 - `data/raw/`: Input feather `.jpg` files.
@@ -32,42 +31,57 @@ flowchart TB
 - `src/feather_processing.py`: Core segmentation and extraction logic.
 - `run_cluster.sh`: Bootstraps Redis, Celery workers, Flower, and starts the pipeline.
 
-## Local Setup
-1. Run `./setup_env.sh`
-2. Activate env: `conda activate feather_env`
+## Setup
+Every node (head, workers) and every machine you drive runs from uses the same
+[pixi](https://pixi.sh) environment (macOS on Apple silicon or Linux; MLX is only
+installed on Apple silicon, where the VLM runs):
+
+```bash
+pixi install
+pixi run setup        # R packages not on conda-forge (pavo, lightr)
+cp .env.example .env  # head/worker hosts, SSH user/key, broker URL, VLM settings
+```
+
+SAM 3 weights are gated: request access at https://huggingface.co/facebook/sam3 and put
+`sam3.pt` in the repo root on each worker. Without it the workers fall back to
+`dino_sam2`.
+
+## Node roles
+| Role | Command | Notes |
+|---|---|---|
+| Broker (head) | `pixi run redis` | password taken from `BROKER_URL` |
+| Worker (each node) | `pixi run worker` | `WORKER_CONCURRENCY`, default 1 |
+| Dashboard (head) | `pixi run flower` | `http://<head>:5555` |
+| VLM server (Apple silicon) | `pixi run vlm-server` | OpenAI-compatible, `:8790`, model `FEATHER_VLM_MODEL` |
+| JupyterLab | `pixi run jupyter` | `:8889` |
 
 ## Cluster Run
-1. Ensure your SSH key and host IPs in `run_cluster.sh` are correct.
-2. Place all feather images in `data/raw/`.
-3. Launch cluster + pipeline:
+1. Fill in `.env` (hosts, SSH, broker).
+2. Place all feather images in `data/raw/` on the head.
+3. Deploy and launch: the repo and environment are installed on every node, images are
+   synced to the workers, then the broker, workers, dashboard and pipeline start.
    ```bash
-   ./run_cluster.sh
+   ./run_cluster.sh            # Celery: tasks are spread over all workers
+   ./run_cluster_sharded.sh    # or: one fixed shard of data/raw per node
    ```
+   If your workers are kept running by a service manager, set `FEATHER_MANAGE_WORKERS=0`.
 
 ## Monitoring
-- Flower dashboard: `http://<head-ip>:5555`
-- Pipeline log on head: `distributed_pipeline.log`
+- Flower dashboard: `http://<head>:5555`
+- Pipeline log on the head: `distributed_pipeline.log`
 - Worker logs on each node: `celery_worker.log`
+- `./monitor_cluster.sh`: memory pressure per node
+- `pixi run check`: broker, workers and SSH reachability from this machine
 
-## Remote Notebook Orchestration (No Local Image Mirror)
-You can run orchestration from a hosted notebook/kernel while keeping data and model execution on the cluster.
+## Driving runs from a notebook
+Any machine with the environment and `.env` can submit work and inspect results while the
+data and models stay on the cluster:
 
-1. Point the notebook kernel to the cluster broker/backend:
-   ```bash
-   export BROKER_URL=redis://10.0.0.148:6379/0
-   export RESULT_BACKEND=redis://10.0.0.148:6379/1
-   ```
-2. Submit work using remote paths (as seen by cluster workers), without copying `data/raw` locally:
-   ```bash
-   python -m src.submit_remote_pipeline \
-     --host 10.0.0.148 \
-     --user cluster_user \
-     --key-path ~/.ssh/ubuntu-mac-cluster_user-admin \
-     --remote-input-dir ~/Feather_Molt_Project/data/raw \
-     --remote-output-dir ~/Feather_Molt_Project/data/processed
-   ```
-
-The notebook host acts as a control plane only. Celery workers do the heavy model inference.
+```bash
+python -m src.submit_remote_pipeline \
+  --remote-input-dir ~/bird-feather-analysis/data/raw \
+  --remote-output-dir ~/bird-feather-analysis/data/processed
+```
 
 ### Fast loop: label table and sample runs
 - **Label table** (second output table: ID, species, age, sex, feather line, date read from the
@@ -75,29 +89,12 @@ The notebook host acts as a control plane only. Celery workers do the heavy mode
   Regions, prompts and format rules live in `configs/label_fields.json`; edit and re-run, no
   restart. Hand-checked answers in `data/label_gold.csv` give per-field accuracy on every run.
   CLI: `pixi run labels -- --sample 10 --seed 1`, all slides: `pixi run labels-all`.
+  The model is served by `pixi run vlm-server`; point `FEATHER_VLM_ENDPOINTS` at it.
 - **Sample segmentation runs**: `pixi run sample-run -- --n 5` (or `--match "A0012 1996"`) sends
   slides through the workers' normal pipeline and copies the outputs to `data/sample_runs/`.
-- The VLM for the label table is served from the head node (`http://10.0.0.148:8790`, OpenAI-compatible,
-  home-lab `feather_vlm_server`), so none of this needs MLX locally.
+  Their run ids start with `test-`.
 
-### Linux notebook host (pixi)
-`setup_env.sh` is for the macOS worker nodes. On a Linux notebook host (for example a Coder
-workspace) use [pixi](https://pixi.sh) instead:
-
-```bash
-pixi install
-pixi run setup     # pavo + lightr from CRAN for the R colour analysis
-pixi run kernel    # registers the "bird-feather-analysis (pixi)" Jupyter kernel
-pixi run check     # broker, workers and SSH access, using .env
-pixi run sync-runs # copy finished runs to Google Drive now; sync-status shows the result
-```
-
-Finished runs are copied from the head node to the Drive folder
-`Feather_Molt_Project/runs/<run_id>/` every hour (home-lab `feather-sync-runs`).
-Test runs (`max_images` other than `all`, or ids containing test/smoke/debug/tmp) are
-skipped, and Drive folders curated by hand (no `.cluster-sync` marker) are left alone.
-
-Settings come from the environment or a `.env` in the repo root (see `.env.example`).
-On the Coder workspaces the JupyterLab option does all of this on start, and the
-`.env` plus a read-only SSH key are provided per user by the home-lab
-`feather_cluster_access` playbook.
+### Archiving runs
+`pixi run sync-runs` asks the head node to archive finished runs (`pixi run sync-status`
+shows the last result). Test runs (`max_images` other than `all`, or ids containing
+test/smoke/debug/tmp) are skipped.
