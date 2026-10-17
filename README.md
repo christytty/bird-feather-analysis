@@ -69,6 +69,17 @@ You can run orchestration from a hosted notebook/kernel while keeping data and m
 
 The notebook host acts as a control plane only. Celery workers do the heavy model inference.
 
+### Fast loop: label table and sample runs
+- **Label table** (second output table: ID, species, age, sex, feather line, date read from the
+  original slide): open `notebooks/label_lab.ipynb`, set the parameters in the first cell, run.
+  Regions, prompts and format rules live in `configs/label_fields.json`; edit and re-run, no
+  restart. Hand-checked answers in `data/label_gold.csv` give per-field accuracy on every run.
+  CLI: `pixi run labels -- --sample 10 --seed 1`, all slides: `pixi run labels-all`.
+- **Sample segmentation runs**: `pixi run sample-run -- --n 5` (or `--match "A0012 1996"`) sends
+  slides through the workers' normal pipeline and copies the outputs to `data/sample_runs/`.
+- The VLM for the label table is served from the head node (`http://10.0.0.148:8790`, OpenAI-compatible,
+  home-lab `feather_vlm_server`), so none of this needs MLX locally.
+
 ### Linux notebook host (pixi)
 `setup_env.sh` is for the macOS worker nodes. On a Linux notebook host (for example a Coder
 workspace) use [pixi](https://pixi.sh) instead:

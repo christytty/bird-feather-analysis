@@ -3,6 +3,9 @@ data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+data/raw_cache/
+data/label_runs/
+data/sample_runs/
 
 # Jupyter
 .ipynb_checkpoints

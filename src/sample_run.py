@@ -1,0 +1,94 @@
+"""Small segmentation runs on the cluster, results copied back here.
+
+Sends N slides through the workers' normal process_image task (Grounding DINO
++ SAM + crops, with whatever VLM settings the workers run with), waits, then
+copies the outputs into data/sample_runs/<run_id>/ for inspection. Run ids
+start with "test-", so the Drive run sync ignores them.
+
+    python -m src.sample_run --n 5 --seed 2
+    python -m src.sample_run --match "A0012 1996" --match BB17692
+"""
+from __future__ import annotations
+
+import argparse
+import random
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+from src.notebook_remote_runtime import (
+    RemoteClusterIO,
+    assert_tcp_reachable,
+    create_celery_client,
+    load_notebook_config_from_env,
+)
+
+REPO = Path(__file__).resolve().parent.parent
+
+
+def run(n: int = 5, seed: int = 0, match: list[str] | None = None, timeout: int = 900,
+        run_id: str | None = None) -> Path:
+    config = load_notebook_config_from_env()
+    assert_tcp_reachable(config.broker_url, "Broker")
+    app = create_celery_client(config)
+    io = RemoteClusterIO(config)
+
+    images = io.list_remote_images()
+    if match:
+        chosen = [p for p in images if any(m in Path(p).name for m in match)]
+    else:
+        chosen = random.Random(seed).sample(images, min(n, len(images)))
+    run_id = run_id or "test-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+    remote_out = io.remote_runtime_path(f"{config.remote_repo_dir}/data/runs/{run_id}/processed")
+    local_out = REPO / "data" / "sample_runs" / run_id
+    print(f"{run_id}: {len(chosen)} slides -> workers")
+
+    pending = {app.send_task("src.celery_tasks.process_image", args=[p, remote_out]): p for p in chosen}
+    deadline = time.time() + timeout
+    done: dict[str, dict] = {}
+    while pending and time.time() < deadline:
+        for res in list(pending):
+            if res.ready():
+                p = pending.pop(res)
+                try:
+                    done[p] = res.get(timeout=5) or {}
+                except Exception as exc:  # noqa: BLE001
+                    done[p] = {"success": False, "reason": f"{type(exc).__name__}: {exc}"}
+                info = done[p]
+                print(f"  {'ok ' if info.get('success') else 'FAIL'} {Path(p).name} "
+                      f"on {info.get('worker', '?')} {info.get('reason') or ''}", flush=True)
+        time.sleep(2)
+    for p in pending.values():
+        print(f"  TIMEOUT {Path(p).name} (still queued or running)")
+
+    # Each worker writes to its own disk; collect from all of them.
+    stems = {Path(p).stem for p in chosen}
+    got = 0
+    for host in config.cluster_hosts:
+        cmd = f"find {io._remote_shell_path(remote_out)} -maxdepth 1 -type f -iname '*.jpg' | sort"
+        # The folder only exists on hosts that ran one of the tasks.
+        proc = subprocess.run([*io._ssh_base_cmd(host), cmd], capture_output=True, text=True)
+        listing = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        for f in listing:
+            if any(Path(f).name.startswith(s) for s in stems):
+                io.fetch_remote_file(host, f, local_out)
+                got += 1
+    print(f"copied {got} output files to {local_out}")
+    return local_out
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--n", type=int, default=5)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--match", action="append")
+    ap.add_argument("--timeout", type=int, default=900, help="seconds to wait for the workers")
+    args = ap.parse_args(argv)
+    run(args.n, args.seed, args.match, args.timeout)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

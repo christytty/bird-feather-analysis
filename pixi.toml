@@ -8,6 +8,8 @@
 #   pixi run kernel      # register the "bird-feather-analysis (pixi)" Jupyter kernel
 #   pixi run check       # broker + SSH reachability check using .env
 #   pixi run sync-runs   # copy finished runs to Google Drive now (sync-status to check)
+#   pixi run labels -- --sample 10   # label table on a sample (notebooks/label_lab.ipynb)
+#   pixi run sample-run -- --n 5     # small segmentation run on the cluster
 [workspace]
 name = "bird-feather-analysis"
 channels = ["conda-forge"]
@@ -60,4 +62,7 @@ setup = "Rscript -e 'if (!requireNamespace(\"pavo\", quietly = TRUE)) install.pa
 kernel = "python -m ipykernel install --user --name pixi-bird-feather-analysis --display-name 'bird-feather-analysis (pixi)'"
 check = "python -m src.check_remote"
 sync-runs = "python -m src.sync_runs"
+labels = "python -m src.label_extract"
+labels-all = "python -m src.label_extract --all --workers 4 --out data/label_runs/full"
+sample-run = "python -m src.sample_run"
 sync-status = "python -m src.sync_runs status"
