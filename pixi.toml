@@ -67,6 +67,8 @@ grad-cam = "*"
 onnxruntime = "*"
 flower = "*"
 pi-heif = "*"
+# SAM 3 text prompts in ultralytics need its CLIP fork (otherwise it pip-installs it at runtime)
+clip = { git = "https://github.com/ultralytics/CLIP.git" }
 
 [target.osx-arm64.pypi-dependencies]
 mlx-vlm = ">=0.7.8"
