@@ -9,6 +9,7 @@ data/processed/*
 *.log
 
 # Python
+.pixi/
 __pycache__/
 *.py[cod]
 *.class

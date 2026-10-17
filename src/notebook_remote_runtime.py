@@ -10,6 +10,11 @@ from urllib.parse import urlparse
 
 from celery import Celery
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # python-dotenv is optional on the cluster nodes
+    load_dotenv = None
+
 
 @dataclass(slots=True)
 class RemoteNotebookConfig:
@@ -32,6 +37,10 @@ def _first_existing_path(paths: list[str]) -> str:
 
 
 def load_notebook_config_from_env() -> RemoteNotebookConfig:
+    # Settings may live in the repo's .env (as on Coder workspaces); variables
+    # already set in the environment win.
+    if load_dotenv is not None:
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
     head_host = os.getenv("FEATHER_HEAD_HOST", "10.0.0.148")
     ssh_user = os.getenv("FEATHER_SSH_USER", "openteams")
 

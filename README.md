@@ -68,3 +68,19 @@ You can run orchestration from a hosted notebook/kernel while keeping data and m
    ```
 
 The notebook host acts as a control plane only. Celery workers do the heavy model inference.
+
+### Linux notebook host (pixi)
+`setup_env.sh` is for the macOS worker nodes. On a Linux notebook host (for example a Coder
+workspace) use [pixi](https://pixi.sh) instead:
+
+```bash
+pixi install
+pixi run setup     # pavo + lightr from CRAN for the R colour analysis
+pixi run kernel    # registers the "bird-feather-analysis (pixi)" Jupyter kernel
+pixi run check     # broker, workers and SSH access, using .env
+```
+
+Settings come from the environment or a `.env` in the repo root (see `.env.example`).
+On the Coder workspaces the JupyterLab option does all of this on start, and the
+`.env` plus a read-only SSH key are provided per user by the home-lab
+`feather_cluster_access` playbook.

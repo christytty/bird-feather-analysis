@@ -1,0 +1,57 @@
+# Linux environment for driving the cluster from a notebook (e.g. a Coder
+# workspace). The nodes that run the workers still use setup_env.sh, which
+# is macOS-only (MLX). Here the heavy models are optional: notebooks submit work
+# to the Celery workers and only run small local steps (BioCLIP heatmap, pavo).
+#
+#   pixi install
+#   pixi run setup       # pavo + lightr from CRAN (not packaged on conda-forge)
+#   pixi run kernel      # register the "bird-feather-analysis (pixi)" Jupyter kernel
+#   pixi run check       # broker + SSH reachability check using .env
+[workspace]
+name = "bird-feather-analysis"
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64"]
+
+[dependencies]
+python = "3.10.*"
+pip = "*"
+ipykernel = "*"
+ipywidgets = "*"
+numpy = "*"
+pandas = "*"
+pillow = "*"
+matplotlib = "*"
+opencv = "*"
+python-dotenv = "*"
+celery = "*"
+redis-py = "*"
+openssh = "*"
+# R side of the colour analysis (notebooks call Rscript with pavo). pavo and
+# lightr are not on conda-forge; `pixi run setup` installs them from CRAN
+# on top of these dependencies.
+r-base = "*"
+r-magick = "*"
+r-geometry = "*"
+r-cluster = "*"
+"r-future.apply" = "*"
+r-mapproj = "*"
+r-plot3d = "*"
+r-viridislite = "*"
+r-progressr = "*"
+r-xml2 = "*"
+r-jsonlite = "*"
+
+[pypi-dependencies]
+flower = "*"
+pi-heif = "*"
+torch = "*"
+torchvision = "*"
+open_clip_torch = "*"
+ultralytics = "*"
+timm = "*"
+einops = "*"
+
+[tasks]
+setup = "Rscript -e 'if (!requireNamespace(\"pavo\", quietly = TRUE)) install.packages(c(\"lightr\", \"pavo\"), repos = \"https://cloud.r-project.org\")'"
+kernel = "python -m ipykernel install --user --name pixi-bird-feather-analysis --display-name 'bird-feather-analysis (pixi)'"
+check = "python -m src.check_remote"
