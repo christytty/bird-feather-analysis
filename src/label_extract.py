@@ -14,7 +14,7 @@ Every field comes back with a status, so a missing value always says why:
   mismatch_filename  disagrees with the ID/year in the file name -> review
   error           the request failed; this is NOT evidence the label is missing
 
-The VLM runs on the nodes behind an OpenAI-compatible server
+The VLM runs on the Apple-silicon (MLX) cluster nodes behind an OpenAI-compatible server
 (home-lab feather_vlm_server, http://10.0.0.148:8790), so this works from any
 notebook host without MLX.
 

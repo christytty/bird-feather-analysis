@@ -1,5 +1,5 @@
 # Linux environment for driving the cluster from a notebook (e.g. a Coder
-# workspace). The nodes that run the workers still use setup_env.sh, which
+# workspace). The Apple-silicon (MLX) nodes that run the workers still use setup_env.sh, which
 # is macOS-only (MLX). Here the heavy models are optional: notebooks submit work
 # to the Celery workers and only run small local steps (BioCLIP heatmap, pavo).
 #
