@@ -34,12 +34,15 @@ r-magick = "*"
 r-geometry = "*"
 r-cluster = "*"
 "r-future.apply" = "*"
-r-mapproj = "*"
 r-plot3d = "*"
 r-viridislite = "*"
 r-progressr = "*"
 r-xml2 = "*"
 r-jsonlite = "*"
+# pavo imports sf; from CRAN it would compile sf/s2/wk for ~15 minutes
+r-sf = "*"
+r-farver = "*"
+r-lifecycle = "*"
 
 [pypi-dependencies]
 flower = "*"
