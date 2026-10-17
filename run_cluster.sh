@@ -28,7 +28,7 @@ SYNC_RAW_DATA="${SYNC_RAW_DATA:-1}"
 ENABLE_VLM="${ENABLE_VLM:-1}"
 ENABLE_VLM_SCORING="${ENABLE_VLM_SCORING:-1}"
 ENABLE_VLM_METADATA="${ENABLE_VLM_METADATA:-1}"
-VLM_MODEL="${VLM_MODEL:-mlx-community/Qwen3-VL-8B-Instruct-4bit}"
+VLM_MODEL="${VLM_MODEL:-mlx-community/Qwen3.8-27B-4bit}"
 
 sync_env_file() {
   local ip="$1"

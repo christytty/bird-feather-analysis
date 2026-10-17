@@ -16,12 +16,12 @@ fi
 source "$HOME/miniforge3/etc/profile.d/conda.sh" 2>/dev/null || source "$(conda info --base)/etc/profile.d/conda.sh"
 
 echo "[2/3] Creating 'feather_env'..."
-conda create -y -n feather_env -c conda-forge python=3.10 || echo "feather_env already exists"
+conda create -y -n feather_env -c conda-forge python=3.12 || echo "feather_env already exists"
 conda activate feather_env
 
 echo "[3/3] Installing Python dependencies..."
 pip install --upgrade pip
-pip install torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam jupyterlab ipykernel ipywidgets onnxruntime jupyter-resource-usage opencv-python matplotlib python-dotenv 'celery[redis]' flower redis pi-heif
+pip install torch torchvision 'ultralytics>=8.4.180' pandas open_clip_torch einops kornia timm 'mlx-vlm>=0.7.8' transformers grad-cam jupyterlab ipykernel ipywidgets onnxruntime jupyter-resource-usage opencv-python matplotlib python-dotenv 'celery[redis]' flower redis pi-heif
 
 python -m ipykernel install --user --name feather_env --display-name "Feather Env"
 

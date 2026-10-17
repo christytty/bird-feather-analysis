@@ -34,3 +34,8 @@ install_grafana_dashboards_final3.sh
 install_grafana_dashboards_final4.sh
 install_grafana_dashboards_final5.sh
 install_grafana_dashboards_final6.sh
+
+# Model weights downloaded next to the repo (SAM 3 is gated on Hugging Face)
+/sam3*.pt
+/sam2*.pt
+/yolo*.pt

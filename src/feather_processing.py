@@ -12,8 +12,10 @@ import torch
 import torchvision
 from dotenv import load_dotenv
 from PIL import Image
-from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 from ultralytics import SAM
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_VLM_MODEL = "mlx-community/Qwen3.8-27B-4bit"
 
 
 @dataclass
@@ -37,10 +39,34 @@ class FeatherProcessor:
     def __init__(self) -> None:
         load_dotenv()
         self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-        self.dino_id = "IDEA-Research/grounding-dino-base"
-        self.dino_processor = AutoProcessor.from_pretrained(self.dino_id)
-        self.dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(self.dino_id).to(self.device)
-        self.sam_model = SAM("sam2.1_b.pt")
+        # "sam3": SAM 3 finds and segments feathers from the text prompt in one model.
+        # "dino_sam2": the original Grounding DINO boxes -> SAM 2.1 masks, kept for comparison.
+        self.segmenter = os.getenv("FEATHER_SEGMENTER", "sam3")
+        weights = os.getenv("FEATHER_SAM3_WEIGHTS", os.path.join(REPO_ROOT, "sam3.pt"))
+        if self.segmenter == "sam3" and not os.path.exists(weights):
+            # sam3.pt is gated on Hugging Face (facebook/sam3); until it is downloaded
+            # next to the repo, keep working with the original detector.
+            logging.warning("SAM 3 weights not found at %s; using dino_sam2", weights)
+            self.segmenter = "dino_sam2"
+        if self.segmenter == "sam3":
+            from ultralytics.models.sam import SAM3SemanticPredictor
+
+            self.sam3 = SAM3SemanticPredictor(overrides={
+                "conf": float(os.getenv("FEATHER_SAM3_CONF", "0.25")),
+                "task": "segment",
+                "mode": "predict",
+                "model": weights,
+                "verbose": False,
+            })
+        elif self.segmenter == "dino_sam2":
+            from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
+
+            self.dino_id = "IDEA-Research/grounding-dino-base"
+            self.dino_processor = AutoProcessor.from_pretrained(self.dino_id)
+            self.dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(self.dino_id).to(self.device)
+            self.sam_model = SAM("sam2.1_b.pt")
+        else:
+            raise ValueError(f"FEATHER_SEGMENTER must be sam3 or dino_sam2, not {self.segmenter!r}")
 
         self.has_vlm = False
         self.vlm_model = None
@@ -48,14 +74,18 @@ class FeatherProcessor:
         self.vlm_generate = None
         self.vlm_scoring_enabled = os.getenv("FEATHER_ENABLE_VLM_SCORING", "1") == "1"
         self.vlm_metadata_enabled = os.getenv("FEATHER_ENABLE_VLM_METADATA", "1") == "1"
-        self.vlm_model_id = os.getenv("FEATHER_VLM_MODEL", "mlx-community/Qwen3-VL-8B-Instruct-4bit")
+        self.vlm_model_id = os.getenv("FEATHER_VLM_MODEL", DEFAULT_VLM_MODEL)
+        self.vlm_config = None
         # Keep VLM opt-in so workers avoid expensive startup unless explicitly enabled.
         if os.getenv("FEATHER_ENABLE_VLM", "1") == "1":
             try:
                 from mlx_vlm import generate as mlx_generate
                 from mlx_vlm import load as mlx_load
 
+                from mlx_vlm.utils import load_config
+
                 self.vlm_model, self.vlm_processor = mlx_load(self.vlm_model_id)
+                self.vlm_config = load_config(self.vlm_model_id)
                 self.vlm_generate = mlx_generate
                 self.has_vlm = True
             except Exception as exc:  # noqa: BLE001
@@ -93,16 +123,17 @@ class FeatherProcessor:
         }
         if not (self.has_vlm and self.vlm_generate is not None and (self.vlm_scoring_enabled or self.vlm_metadata_enabled)):
             return out
-        prompt = (
-            "<|im_start|>system\nYou are a precise computer vision quality analyst. Return ONLY valid JSON.<|im_end|>\n"
-            "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>\n"
+        instruction = (
+            "You are a precise computer vision quality analyst. Return ONLY valid JSON.\n"
             "Given this feather slide image/overlay, extract specimen metadata and segmentation quality.\n"
             "Return exactly JSON with keys:\n"
             '{"Bird_ID":"A1234 or UNKNOWN","Date":"YYYY-MM-DD or YYYY or UNKNOWN","quality_score_1_to_10":0-10,'
             '"all_feathers_covered":true/false,"background_leakage_detected":true/false,"green_boxes_grouped_feathers":true/false,'
             '"notes":"short explanation of major issue(s) or empty string"}'
-            "<|im_end|>\n<|im_start|>assistant\n"
         )
+        # The model's own chat template (Qwen3.8 differs from the hand-written Qwen3-VL
+        # tokens this used to hard-code); thinking off so the reply is just the JSON.
+        prompt = self._chat_prompt(instruction)
         try:
             output = self.vlm_generate(
                 self.vlm_model,
@@ -112,6 +143,7 @@ class FeatherProcessor:
                 max_tokens=180,
             )
             text = getattr(output, "text", str(output))
+            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
             match = re.search(r"\{.*?\}", text, re.DOTALL)
             if match:
                 obj = json.loads(match.group(0))
@@ -136,6 +168,15 @@ class FeatherProcessor:
         except Exception as exc:  # noqa: BLE001
             logging.warning("VLM judge failed for %s: %s", image_path, exc)
             return out
+
+    def _chat_prompt(self, instruction: str) -> str:
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        try:
+            return apply_chat_template(self.vlm_processor, self.vlm_config, instruction,
+                                       num_images=1, enable_thinking=False)
+        except TypeError:  # templates without a thinking switch
+            return apply_chat_template(self.vlm_processor, self.vlm_config, instruction, num_images=1)
 
     def _infer_metadata(self, image_path: str) -> tuple[str, str]:
         name = os.path.basename(image_path)
@@ -227,6 +268,82 @@ class FeatherProcessor:
             boxes_with_scores.append([b[0], b[1], b[2], b[3], float(score)])
         return boxes_with_scores
 
+    def _segment_sam3(self, image_path, img_pil, prompts, nms_iou, max_box_area_ratio, retry=False):
+        """SAM 3 concept segmentation: every instance matching the text prompts.
+        Returns (boxes, masks, failure_reason)."""
+        texts = [p.rstrip(".") for p in prompts]
+        sources = [image_path]
+        if retry:
+            # Contrast-enhanced pass for dark feathers, as the old detector did.
+            enhanced = self._enhance_for_dark_detection(img_pil)
+            tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            enhanced.save(tmp.name, quality=95)
+            sources.append(tmp.name)
+        boxes, scores, masks = [], [], []
+        img_area = img_pil.size[0] * img_pil.size[1]
+        try:
+            for src in sources:
+                self.sam3.set_image(src)
+                for res in self.sam3(text=texts):
+                    if res.masks is None or res.boxes is None:
+                        continue
+                    for b, sc, m in zip(res.boxes.xyxy.cpu().numpy(), res.boxes.conf.cpu().numpy(),
+                                        res.masks.data.cpu().numpy()):
+                        if (b[2] - b[0]) * (b[3] - b[1]) > img_area * max_box_area_ratio:
+                            continue
+                        boxes.append([float(v) for v in b]); scores.append(float(sc)); masks.append(m)
+        finally:
+            if retry:
+                os.unlink(sources[1])
+        if not boxes:
+            return [], [], "no_masks"
+        keep = torchvision.ops.nms(torch.tensor(boxes), torch.tensor(scores), nms_iou)
+        return [boxes[int(i)] for i in keep], [masks[int(i)] for i in keep], ""
+
+    def _segment_dino_sam2(self, image_path, img_pil, prompts, score_thresh, nms_iou, max_box_area_ratio, shrink):
+        """Original path: Grounding DINO boxes, then SAM 2.1 masks for them."""
+        boxes_with_scores: list[list[float]] = []
+        for p in prompts:
+            boxes_with_scores.extend(
+                self._collect_boxes_with_scores(
+                    img_pil=img_pil,
+                    prompt_text=p,
+                    score_thresh=score_thresh,
+                    max_box_area_ratio=max_box_area_ratio,
+                    shrink=shrink,
+                )
+            )
+
+        # Additional pass over contrast-enhanced image improves dark-feather recall.
+        enhanced_img_pil = self._enhance_for_dark_detection(img_pil)
+        for p in prompts:
+            boxes_with_scores.extend(
+                self._collect_boxes_with_scores(
+                    img_pil=enhanced_img_pil,
+                    prompt_text=p,
+                    score_thresh=score_thresh,
+                    max_box_area_ratio=max_box_area_ratio,
+                    shrink=shrink,
+                )
+            )
+
+        if not boxes_with_scores:
+            return [], [], "no_boxes"
+
+        boxes_tensor = torch.tensor([b[:4] for b in boxes_with_scores], dtype=torch.float32)
+        scores_tensor = torch.tensor([b[4] for b in boxes_with_scores], dtype=torch.float32)
+        keep_indices = torchvision.ops.nms(boxes_tensor, scores_tensor, nms_iou)
+        boxes = [boxes_with_scores[int(i)][:4] for i in keep_indices]
+
+        if not boxes:
+            return [], [], "no_boxes_after_nms"
+
+        sam_results = self.sam_model(image_path, bboxes=boxes, device=self.device, verbose=False)
+        sam_res = sam_results[0]
+        if sam_res.masks is None:
+            return [], [], "no_masks"
+        return boxes, list(sam_res.masks.data.cpu().numpy()), ""
+
     def process_image(self, image_path: str, output_dir: str, profile: str = "default") -> ProcessResult:
         bird_id, date = self._infer_metadata(image_path)
         metadata_source = "filename"
@@ -255,63 +372,17 @@ class FeatherProcessor:
                 shrink = 0.02
                 prompts.extend(["dark bird feather.", "black feather."])
 
-            boxes_with_scores: list[list[float]] = []
-            for p in prompts:
-                boxes_with_scores.extend(
-                    self._collect_boxes_with_scores(
-                        img_pil=img_pil,
-                        prompt_text=p,
-                        score_thresh=score_thresh,
-                        max_box_area_ratio=max_box_area_ratio,
-                        shrink=shrink,
-                    )
-                )
-
-            # Additional pass over contrast-enhanced image improves dark-feather recall.
-            enhanced_img_pil = self._enhance_for_dark_detection(img_pil)
-            for p in prompts:
-                boxes_with_scores.extend(
-                    self._collect_boxes_with_scores(
-                        img_pil=enhanced_img_pil,
-                        prompt_text=p,
-                        score_thresh=score_thresh,
-                        max_box_area_ratio=max_box_area_ratio,
-                        shrink=shrink,
-                    )
-                )
-
-            if not boxes_with_scores:
+            if self.segmenter == "sam3":
+                boxes, mask_list, reason = self._segment_sam3(
+                    image_path, img_pil, prompts, nms_iou, max_box_area_ratio, retry=(profile == "strict_retry"))
+            else:
+                boxes, mask_list, reason = self._segment_dino_sam2(
+                    image_path, img_pil, prompts, score_thresh, nms_iou, max_box_area_ratio, shrink)
+            if reason:
                 return ProcessResult(
                     image_path=image_path,
                     success=False,
-                    reason="no_boxes",
-                    metadata_source=metadata_source,
-                    bird_id=bird_id,
-                    date=date,
-                )
-
-            boxes_tensor = torch.tensor([b[:4] for b in boxes_with_scores], dtype=torch.float32)
-            scores_tensor = torch.tensor([b[4] for b in boxes_with_scores], dtype=torch.float32)
-            keep_indices = torchvision.ops.nms(boxes_tensor, scores_tensor, nms_iou)
-            boxes = [boxes_with_scores[int(i)][:4] for i in keep_indices]
-
-            if not boxes:
-                return ProcessResult(
-                    image_path=image_path,
-                    success=False,
-                    reason="no_boxes_after_nms",
-                    metadata_source=metadata_source,
-                    bird_id=bird_id,
-                    date=date,
-                )
-
-            sam_results = self.sam_model(image_path, bboxes=boxes, device=self.device, verbose=False)
-            sam_res = sam_results[0]
-            if sam_res.masks is None:
-                return ProcessResult(
-                    image_path=image_path,
-                    success=False,
-                    reason="no_masks",
+                    reason=reason,
                     metadata_source=metadata_source,
                     bird_id=bird_id,
                     date=date,
@@ -320,7 +391,6 @@ class FeatherProcessor:
             img = cv2.imread(image_path)
             feathers: list[dict] = []
 
-            mask_list = sam_res.masks.data.cpu().numpy()
             for mask in mask_list:
                 mask_resized = cv2.resize(mask.astype(np.float32), (img.shape[1], img.shape[0]))
                 binary_mask = (mask_resized > 0.5).astype(np.uint8)

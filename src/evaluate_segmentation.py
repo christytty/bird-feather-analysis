@@ -25,7 +25,7 @@ def main():
     if not os.path.exists(MODEL_PATH):
         print(f"Model {MODEL_PATH} not found. Ensure YOLOv12-seg is fine-tuned first.")
         # Fallback for testing purposes
-        MODEL_PATH_LOAD = 'yolov12n-seg.pt'
+        MODEL_PATH_LOAD = 'yolo26n-seg.pt'
     else:
         MODEL_PATH_LOAD = MODEL_PATH
 
