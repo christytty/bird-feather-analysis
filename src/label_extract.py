@@ -43,9 +43,11 @@ from itertools import cycle
 from pathlib import Path
 from threading import Lock
 
+from dotenv import load_dotenv
 from PIL import Image
 
 REPO = Path(__file__).resolve().parent.parent
+load_dotenv(REPO / ".env", override=False)  # FEATHER_VLM_ENDPOINTS etc.
 DEFAULT_CONFIG = REPO / "configs" / "label_fields.json"
 FIELDS_ORDER = ["individual_id", "species", "age", "sex", "feather", "date"]
 
