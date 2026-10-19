@@ -78,6 +78,8 @@ def main() -> int:
     ap.add_argument("--raw-dir", default=str(REPO / "data" / "raw"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--variants", default=",".join(VARIANTS))
+    ap.add_argument("--config-variants", help="JSON {name: segmentation overrides}: compare settings of the "
+                                              "pipeline's own steps (sam3.exemplar/split/refine) instead")
     args = ap.parse_args()
     os.environ.setdefault("FEATHER_ENABLE_VLM", "0")
     os.environ.setdefault("FEATHER_ENABLE_LABELS", "0")
@@ -99,12 +101,19 @@ def main() -> int:
     fns = make_variants(p, weights, stats)
     out = Path(args.out)
     results: dict = {}
-    for v in args.variants.split(","):
-        p._segment_sam3 = fns[v]
+    config_variants = json.loads(args.config_variants) if args.config_variants else None
+    for v in (list(config_variants) if config_variants else args.variants.split(",")):
+        if config_variants:
+            options = {"segmentation": config_variants[v]}
+        else:
+            # the monkeypatched variants replace the extras, so switch the configured ones off
+            p._segment_sam3 = fns[v]
+            options = {"segmentation": {"sam3": {"exemplar": {"enabled": False}, "split": {"enabled": False},
+                                                 "refine": {"enabled": False}}}}
         results[v] = {}
         for s in args.slides:
             t0 = time.time()
-            r = p.process_image(str(Path(args.raw_dir) / s), str(out / v))
+            r = p.process_image(str(Path(args.raw_dir) / s), str(out / v), options=options)
             results[v][s] = {"success": r.success, "reason": r.reason, "seconds": round(time.time() - t0, 1),
                              "feathers": [{k: f.get(k) for k in KEEP if k in f} for f in r.feather_ids]}
             n = sum(f.get("segment_status", "segmented") == "segmented" for f in r.feather_ids)
