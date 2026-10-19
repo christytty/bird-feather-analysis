@@ -339,6 +339,47 @@ def stop_run(run_id: str, drop_queued: bool = False) -> str:
     return "; ".join(msg)
 
 
+_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,80}$")
+
+
+def verify_drive_copy(run_id: str, remote: str = "gdrive:Feather_Molt_Project/runs") -> tuple[bool, str]:
+    """True when every local file of the run (tables and segmentation outputs)
+    is on Drive with the same size (rclone check --one-way --size-only)."""
+    pairs = [(REPO / "data" / "label_runs" / run_id, f"{remote}/{run_id}"),
+             (REPO / "data" / "sample_runs" / run_id, f"{remote}/{run_id}/segmentation")]
+    notes = []
+    for local, dest in pairs:
+        if not local.exists():
+            return False, f"no local copy at {local}"
+        p = subprocess.run(["rclone", "check", str(local), dest, "--one-way", "--size-only", "-q"],
+                           capture_output=True, text=True, timeout=1800)
+        if p.returncode != 0:
+            return False, f"{dest}: " + (p.stderr.strip().splitlines() or ["differs"])[-1][:200]
+        notes.append(f"{dest} ok")
+    return True, "; ".join(notes)
+
+
+def cleanup_node_outputs(run_id: str, require_drive: bool = True, dry_run: bool = False) -> dict:
+    """Deletes data/runs/<run_id>/ on every node, after checking the run's
+    results are on Drive (require_drive). Only that run's folder, only a
+    plain run id; the slides and everything else on the nodes stay."""
+    if not _RUN_ID.match(run_id) or ".." in run_id:
+        raise ValueError(f"refusing odd run id {run_id!r}")
+    if require_drive:
+        ok, why = verify_drive_copy(run_id)
+        if not ok:
+            return {"deleted": False, "reason": f"Drive copy not verified: {why}"}
+    target = f"{remote_repo()}/data/runs/{run_id}"
+    out = {}
+    for h in hosts():
+        cmd = (f"T={target}; [ -d \"$T\" ] || {{ echo 'nothing there'; exit 0; }}; "
+               f"du -sh \"$T\" | cut -f1 | tr -d '\\n'; " + ("echo ' (dry run)'" if dry_run else
+               "rm -rf -- \"$T\" && echo ' deleted'"))
+        p = ssh(h, cmd, timeout=300)
+        out[h] = (p.stdout.strip() or p.stderr.strip())[:120]
+    return {"deleted": not dry_run, "nodes": out}
+
+
 def results(run_id: str) -> dict:
     """Where a finished run's outputs are, and its summary."""
     out = {"labels": str(REPO / "data" / "label_runs" / run_id),

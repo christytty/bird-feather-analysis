@@ -36,6 +36,8 @@ def main() -> int:
     ap.add_argument("--gold", default="data/label_gold.csv")
     ap.add_argument("--remote", default="gdrive:Feather_Molt_Project/runs")
     ap.add_argument("--no-upload", action="store_true")
+    ap.add_argument("--keep-node-outputs", action="store_true",
+                    help="keep data/runs/<run-id>/ on the nodes after the Drive upload (default: delete once verified)")
     ap.add_argument("--allow-old-workers", action="store_true", help="run even if the workers lack the new code")
     args = ap.parse_args()
 
@@ -86,6 +88,11 @@ def main() -> int:
         subprocess.run(["rclone", "copy", str(out), dest, "-q"], check=True)
         subprocess.run(["rclone", "copy", str(seg_dir), f"{dest}/segmentation", "-q"], check=True)
         print("copied to", dest)
+        if not args.keep_node_outputs:
+            from src import cluster_control as cc
+
+            res = cc.cleanup_node_outputs(args.run_id, require_drive=True)
+            print("node outputs:", res.get("reason") or res.get("nodes"))
     return 0
 
 
