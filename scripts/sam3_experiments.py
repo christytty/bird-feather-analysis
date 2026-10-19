@@ -16,7 +16,8 @@ missed-feather check. Only the SAM 3 step differs:
 Runs outside the job queue with FEATHER_ENABLE_VLM=0 (no second copy of the
 VLM on the node; the per-feather checks use the VLM server). Usage on a node:
 
-    cd <repo> && FEATHER_ENABLE_VLM=0 pixi run python scripts/sam3_experiments.py \\
+    cd <repo> && FEATHER_ENABLE_VLM=0 FEATHER_VLM_ENDPOINTS=http://<head>:8790 \\
+        pixi run python scripts/sam3_experiments.py \\
         --slides "A3818 2002-im1708.jpg" ... --out data/runs/test-sam3exp-<id>
 """
 from __future__ import annotations
@@ -85,6 +86,14 @@ def main() -> int:
     p = FeatherProcessor()
     if p.segmenter != "sam3":
         print("SAM 3 weights not found; nothing to compare"); return 2
+    # The per-feather checks need the VLM (here: the server). Stop now rather than
+    # produce a run where every check is a model_error.
+    try:
+        from PIL import Image as _Image
+
+        p.label_client().ask(_Image.new("RGB", (64, 64), "white"), "Reply with OK.", max_tokens=5)
+    except Exception as exc:  # noqa: BLE001
+        print(f"VLM not reachable ({type(exc).__name__}: {exc}); set FEATHER_VLM_ENDPOINTS"); return 3
     weights = os.getenv("FEATHER_SAM3_WEIGHTS", str(REPO / "sam3.pt"))
     stats: dict = {}
     fns = make_variants(p, weights, stats)
