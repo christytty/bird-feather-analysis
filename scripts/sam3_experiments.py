@@ -28,9 +28,6 @@ import sys
 import time
 from pathlib import Path
 
-import cv2
-import numpy as np
-
 REPO = Path(os.getenv("FEATHER_REPO") or Path(__file__).resolve().parent.parent).expanduser()
 sys.path.insert(0, str(REPO))
 
@@ -42,34 +39,13 @@ KEEP = ("seq", "crop", "segment_status", "needs_review", "judge_status", "judge_
         "feathers_possibly_missed", "missed_between")
 
 
-def feather_shaped(box, min_aspect: float = 2.0) -> bool:
-    w, h = box[2] - box[0], box[3] - box[1]
-    return w > 0 and h > 0 and max(w, h) / min(w, h) >= min_aspect
-
-
-def pick_exemplar(boxes, scores) -> list[list[float]]:
-    """The best-scoring feather-shaped box whose area is near the slide's median
-    (a typical single feather, not a merged group or a sliver)."""
-    if not boxes:
-        return []
-    areas = np.array([(b[2] - b[0]) * (b[3] - b[1]) for b in boxes])
-    med = float(np.median(areas))
-    cands = [(s, b) for b, s, a in zip(boxes, scores, areas) if feather_shaped(b) and 0.6 * med <= a <= 1.6 * med]
-    if not cands:
-        return []
-    return [max(cands, key=lambda t: t[0])[1]]
-
-
-def negatives(width: int, height: int) -> list[list[float]]:
-    """Label strip at the top and the date corner: never feathers."""
-    return [[0, 0, width, 0.16 * height], [0.7 * width, 0.88 * height, width, height]]
-
-
 def make_variants(p, weights: str, stats: dict):
-    """Segmentation functions with the signature of FeatherProcessor._segment_sam3."""
+    """Segmentation functions with the signature of FeatherProcessor._segment_sam3,
+    built on src/sam3_extras.py (the same code the pipeline uses when enabled)."""
     import torch
-    import torchvision
     from ultralytics.models.sam import SAM3Predictor
+
+    from src import sam3_extras as sx
 
     base = p._segment_sam3
     inter = SAM3Predictor(overrides={"model": weights, "imgsz": 1008, "task": "segment", "mode": "predict",
@@ -77,77 +53,18 @@ def make_variants(p, weights: str, stats: dict):
                                      "save": False, "verbose": False})
 
     def exemplar(image_path, img_pil, prompts, nms_iou, max_box_area_ratio, retry=False, conf=None):
-        boxes, masks, reason, scores = base(image_path, img_pil, prompts, nms_iou, max_box_area_ratio, retry, conf)
-        pos = pick_exemplar(boxes, scores)
-        if reason or not pos:
-            stats.setdefault("exemplar_skipped", []).append(Path(image_path).name)
-            return boxes, masks, reason, scores
-        W, H = img_pil.size
-        neg = negatives(W, H)
-        p.sam3.set_image(image_path)
-        res = p.sam3(text=[prompts[0].rstrip(".")], bboxes=pos + neg, labels=[1] * len(pos) + [0] * len(neg))
-        nb, ns, nm = [], [], []
-        for r in res:
-            if r.masks is None or r.boxes is None:
-                continue
-            for b, sc, m in zip(r.boxes.xyxy.cpu().numpy(), r.boxes.conf.cpu().numpy(), r.masks.data.cpu().numpy()):
-                if (b[2] - b[0]) * (b[3] - b[1]) > W * H * max_box_area_ratio:
-                    continue
-                if conf is not None and float(sc) < float(conf):
-                    continue
-                nb.append([float(v) for v in b]); ns.append(float(sc)); nm.append(m)
-        if not nb:
-            stats.setdefault("exemplar_empty", []).append(Path(image_path).name)
-            return boxes, masks, reason, scores
-        keep = torchvision.ops.nms(torch.tensor(nb), torch.tensor(ns), nms_iou)
-        stats.setdefault("exemplar_counts", {})[Path(image_path).name] = [len(boxes), len(keep)]
-        return [nb[int(i)] for i in keep], [nm[int(i)] for i in keep], "", [ns[int(i)] for i in keep]
+        first = base(image_path, img_pil, prompts, nms_iou, max_box_area_ratio, retry, conf)
+        out = sx.exemplar_pass(p.sam3, image_path, img_pil.size, prompts[0].rstrip("."), first, {},
+                               nms_iou, max_box_area_ratio, conf)
+        stats.setdefault("exemplar_counts", {})[Path(image_path).name] = [len(first[0]), len(out[0]), out is first]
+        return out
 
-    def refine_with(first):
+    def refine_with(first_fn):
         def refine(image_path, img_pil, prompts, nms_iou, max_box_area_ratio, retry=False, conf=None):
-            boxes, masks, reason, scores = first(image_path, img_pil, prompts, nms_iou, max_box_area_ratio,
-                                                 retry, conf)
-            if reason or not masks:
-                return boxes, masks, reason, scores
-            img = cv2.imread(image_path)
-            H, W = img.shape[:2]
-            full = [cv2.resize(m.astype(np.float32), (W, H)) > 0.5 for m in masks]
-            centers = []
-            for m in full:
-                ys, xs = np.nonzero(m)
-                # a point on the feather itself, near its middle (the mask pixel closest to the centroid)
-                cy, cx = ys.mean(), xs.mean()
-                k = int(np.argmin((ys - cy) ** 2 + (xs - cx) ** 2)) if len(ys) else 0
-                centers.append((float(xs[k]), float(ys[k])) if len(ys) else None)
-            out, changed, kept = [], 0, 0
-            for i, m in enumerate(full):
-                ys, xs = np.nonzero(m)
-                if not len(ys) or centers[i] is None:
-                    out.append(m.astype(np.float32)); continue
-                x0, x1, y0, y1 = xs.min(), xs.max(), ys.min(), ys.max()
-                pad = int(0.15 * max(x1 - x0, y1 - y0)) + 20
-                cx0, cy0, cx1, cy1 = max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)
-                crop = np.ascontiguousarray(img[cy0:cy1, cx0:cx1])
-                pts = [[centers[i][0] - cx0, centers[i][1] - cy0]]
-                lab = [1]
-                for j, c in enumerate(centers):
-                    if j != i and c is not None and cx0 <= c[0] < cx1 and cy0 <= c[1] < cy1:
-                        pts.append([c[0] - cx0, c[1] - cy0]); lab.append(0)
-                inter.set_image(crop)
-                res = inter(bboxes=[[x0 - cx0, y0 - cy0, x1 - cx0, y1 - cy0]], points=[pts], labels=[lab])
-                if not res or res[0].masks is None:
-                    out.append(m.astype(np.float32)); kept += 1; continue
-                sub = res[0].masks.data[0].cpu().numpy() > 0.5
-                new = np.zeros_like(m)
-                new[cy0:cy1, cx0:cx1] = sub[: cy1 - cy0, : cx1 - cx0]
-                inter_ = np.logical_and(new, m).sum()
-                iou = inter_ / max(1, np.logical_or(new, m).sum())
-                if iou < 0.5:            # the second pass went somewhere else: keep the first mask
-                    out.append(m.astype(np.float32)); kept += 1
-                else:
-                    out.append(new.astype(np.float32)); changed += 1
-            stats.setdefault("refine", {})[Path(image_path).name] = {"refined": changed, "kept_first": kept}
-            return boxes, out, reason, scores
+            first = first_fn(image_path, img_pil, prompts, nms_iou, max_box_area_ratio, retry, conf)
+            out, info = sx.refine_pass(inter, image_path, first, {})
+            stats.setdefault("refine", {})[Path(image_path).name] = info
+            return out
         return refine
 
     return {"baseline": base, "exemplar": exemplar, "refine": refine_with(base),

@@ -1,5 +1,5 @@
 {
-  "_comment": "Feather segmentation settings (src/feather_processing.py). A Celery task or sample run can override any key with options={'segmentation': {...}} without redeploying. sam3.imgsz needs a worker restart; everything else applies per task. feather_judge = the per-feather checks (score computed from them, see feather_judge.score); inventory = slide-level check for feathers the segmentation may have missed (review flags only, never a new letter or feather ID). The old slide_judge (metadata + a 1-10 overlay score) is retired: the label extractor owns Bird_ID/Date, and the inventory + per-feather checks cover what it asked.",
+  "_comment": "Feather segmentation settings (src/feather_processing.py). A Celery task or sample run can override any key with options={'segmentation': {...}} without redeploying. sam3.imgsz needs a worker restart; everything else applies per task. feather_judge = the per-feather checks (score computed from them, see feather_judge.score); inventory = slide-level check for feathers the segmentation may have missed (review flags only, never a new letter or feather ID). The old slide_judge (metadata + a 1-10 overlay score) is retired: the label extractor owns Bird_ID/Date, and the inventory + per-feather checks cover what it asked. sam3.exemplar / sam3.refine: optional SAM 3 steps after the text prompt (src/sam3_extras.py, docs/sam3-segmentation-plan.md).",
   "sam3": {
     "prompts": [
       "bird feather"
@@ -10,7 +10,17 @@
     ],
     "conf": 0.25,
     "nms_iou": 0.3,
-    "max_box_area_ratio": 0.45
+    "max_box_area_ratio": 0.45,
+    "exemplar": {
+      "enabled": false,
+      "negatives": true,
+      "min_aspect": 2.0
+    },
+    "refine": {
+      "enabled": false,
+      "pad_frac": 0.15,
+      "min_iou": 0.5
+    }
   },
   "dino_sam2": {
     "prompts": [
