@@ -39,3 +39,17 @@ def test_launch_dry_run_builds_the_command(tmp_path, monkeypatch):
     assert "--no-upload" in rec["cmd"] and rec["slides"] == 2
     assert (tmp_path / "test-x.manifest.txt").read_text() == "a.jpg\nb.jpg\n"
     assert not (tmp_path / "test-x.json").exists()          # dry run starts nothing
+
+
+def test_cleanup_refuses_odd_run_ids_and_waits_for_drive(monkeypatch):
+    import pytest
+
+    for bad in ("../x", "a b", "", "x"):
+        with pytest.raises(ValueError):
+            cc.cleanup_node_outputs(bad, dry_run=True)
+    calls = []
+    monkeypatch.setattr(cc, "hosts", lambda: ["h1"])
+    monkeypatch.setattr(cc, "ssh", lambda h, cmd, timeout=60: calls.append(cmd))
+    monkeypatch.setattr(cc, "verify_drive_copy", lambda run_id: (False, "missing on Drive"))
+    res = cc.cleanup_node_outputs("slice100-x")
+    assert res["deleted"] is False and "missing on Drive" in res["reason"] and calls == []   # nothing touched

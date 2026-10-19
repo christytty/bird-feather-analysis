@@ -69,28 +69,10 @@ def run(n: int = 5, seed: int = 0, match: list[str] | None = None, timeout: int 
     for p in pending.values():
         print(f"  TIMEOUT {Path(p).name} (still queued or running)")
 
-    # Each worker writes to its own disk; collect from all of them.
-    from src.output_names import belongs_to
-
-    slide_names = [Path(p).name for p in chosen]
-    got = 0
-    for host in config.cluster_hosts:
-        cmd = f"find {io._remote_shell_path(remote_out)} -maxdepth 1 -type f -iname '*.jpg' | sort"
-        # The folder only exists on hosts that ran one of the tasks.
-        proc = subprocess.run([*io._ssh_base_cmd(host), cmd], capture_output=True, text=True)
-        listing = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-        for f in listing:
-            if any(belongs_to(Path(f).name, n) for n in slide_names):
-                io.fetch_remote_file(host, f, local_out)
-                got += 1
-        # per-feather judge panels (new worker code), in the feather_qc/ subfolder
-        qc = f"{remote_out}/feather_qc"
-        cmd = f"find {io._remote_shell_path(qc)} -maxdepth 1 -type f -iname '*.jpg' | sort"
-        proc = subprocess.run([*io._ssh_base_cmd(host), cmd], capture_output=True, text=True)
-        for f in (line.strip() for line in proc.stdout.splitlines() if line.strip()):
-            if any(belongs_to(Path(f).name.replace("_qc.jpg", ".jpg"), n) for n in slide_names):
-                io.fetch_remote_file(host, f, local_out / "feather_qc")
-                got += 1
+    # Each worker writes to its own disk; collect from all of them. The folder is
+    # this run's alone, so everything in it is copied (names alone cannot tell a
+    # slide's outputs apart: same-year slides are named by their label date).
+    got = collect_outputs(io, config.cluster_hosts, remote_out, local_out)
     # what each task returned (success, reason, per-feather records with judge scores, labels)
     local_out.mkdir(parents=True, exist_ok=True)
     import json
@@ -99,6 +81,37 @@ def run(n: int = 5, seed: int = 0, match: list[str] | None = None, timeout: int 
                                                             indent=1, default=str))
     print(f"copied {got} output files to {local_out}")
     return local_out
+
+
+def collect_outputs(io, hosts: list[str], remote_out: str, local_out: Path) -> int:
+    """Copies a run's output folder from every node into `local_out` and
+    returns the number of files. One tar stream per node; where tar is not
+    allowed over SSH, the images file by file (top level and feather_qc/)."""
+    import io as _io
+    import tarfile
+
+    local_out.mkdir(parents=True, exist_ok=True)
+    rem = io._remote_shell_path(remote_out)
+    got = 0
+    for host in hosts:
+        p = subprocess.run([*io._ssh_base_cmd(host),
+                            f"cd {rem} 2>/dev/null || exit 3; COPYFILE_DISABLE=1 tar -cf - --exclude=labels/evidence ."],
+                           capture_output=True)
+        if p.returncode == 3:
+            continue                     # this node ran none of the run's slides
+        if p.returncode == 0 and p.stdout:
+            with tarfile.open(fileobj=_io.BytesIO(p.stdout)) as tar:
+                members = [m for m in tar.getmembers() if m.isfile() and not Path(m.name).name.startswith("._")]
+                tar.extractall(local_out, members=members, filter="data")
+                got += len(members)
+            continue
+        for sub in ("", "/feather_qc"):
+            cmd = f"find {io._remote_shell_path(remote_out + sub)} -maxdepth 1 -type f -iname '*.jpg' | sort"
+            proc = subprocess.run([*io._ssh_base_cmd(host), cmd], capture_output=True, text=True)
+            for f in (line.strip() for line in proc.stdout.splitlines() if line.strip()):
+                io.fetch_remote_file(host, f, local_out / sub.strip("/") if sub else local_out)
+                got += 1
+    return got
 
 
 def main(argv: list[str] | None = None) -> int:
