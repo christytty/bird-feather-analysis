@@ -75,6 +75,21 @@
         "other_feather_inside": 3,
         "other_material_inside": 2
       }
+    },
+    "repair": {
+      "_comment": "Second sweep (src/feather_repair.py): a feather that failed a fixable check (outline cut, holes, material or glue inside, other feather inside) gets new masks (holes filled; SAM 3 interactive re-segmentation on the contrast-enhanced and the plain crop, box widened toward the cut sides), each checked again; one replaces the first mask only if it fails fewer checks and nothing new.",
+      "enabled": false,
+      "variants": [
+        "contrast",
+        "plain"
+      ],
+      "fill_holes": true,
+      "widen_frac": 0.25,
+      "pad_frac": 0.15,
+      "contrast_clip": 3.0,
+      "min_area_ratio": 0.8,
+      "max_area_ratio": 1.8,
+      "max_per_slide": 6
     }
   },
   "inventory": {

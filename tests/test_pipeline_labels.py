@@ -162,10 +162,15 @@ def test_process_image_writes_new_names_left_to_right(tmp_path):
 
     assert res.success and res.feathers_saved == 3
     names = sorted(f.name for f in out.iterdir() if f.is_file())
+    assert sorted(p.name for p in (out / "feather_masks").iterdir()) == [
+        "CE01168_2008_Feather_A.png", "CE01168_2008_Feather_B.png", "CE01168_2008_Feather_C.png"]
     assert names == ["CE01168 2008_BoundingBoxes.jpg", "CE01168_2008_Feather_A.jpg",
                      "CE01168_2008_Feather_B.jpg", "CE01168_2008_Feather_C.jpg"]
     assert all(f["judge_status"] == "ok" and f["judge_score"] == 10 and f["needs_review"] == "" for f in res.feather_ids)
     assert all((out / f["qc_image"]).exists() for f in res.feather_ids)
+    import cv2
+    m = cv2.imread(str(out / res.feather_ids[0]["mask_image"]), 0)       # the untrimmed mask, slide-sized
+    assert m.shape == (200, 300) and (m > 0).sum() == 160 * 30
     assert [(f["feather_id"], f["crop"]) for f in res.feather_ids] == [
         ("CE01168V_2008_A", "CE01168_2008_Feather_A.jpg"), ("CE01168V_2008_B", "CE01168_2008_Feather_B.jpg"),
         ("CE01168V_2008_C", "CE01168_2008_Feather_C.jpg")]
@@ -461,6 +466,34 @@ def test_bare_result_gives_ids_only_to_feathers():
     r = lx.bare_result("raw/A0012 1996-im1058.jpg", feathers)
     assert [(f["seq"], f.get("feather_id")) for f in r.feathers] == [
         ("A", "A0012_1996_A"), ("fragment_1", ""), ("B", "A0012_1996_B"), ("missed_1", "")]
+
+
+def test_repair_fills_a_measured_hole_and_keeps_the_better_mask(tmp_path):
+    """A feather whose mask has a large hole fails 'holes or gaps' (measured); the second
+    sweep fills it, the filled mask passes, and it replaces the first."""
+    import numpy as np
+    from src.feather_processing import FeatherProcessor
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    slide = raw / "A0012 1996-im1058.jpg"
+    Image.new("RGB", (400, 300), "white").save(slide)
+    ms = [np.zeros((300, 400), np.float32) for _ in range(2)]
+    ms[0][30:270, 40:100] = 1
+    ms[0][120:160, 55:85] = 0          # hole: 1200 px of 14400, above fail_hole_frac
+    ms[1][30:270, 300:340] = 1
+    p = object.__new__(FeatherProcessor)
+    p.segmenter, p.has_vlm = "sam3", False
+    p._label_client = client = DateClient()
+    p._segment_sam3 = lambda *a, **k: ([[40, 30, 100, 270], [300, 30, 340, 270]], ms, "", [0.9, 0.9])
+    opts = {"segmentation": {"feather_judge": {"repair": {"enabled": True}}}}
+    res = p.process_image(str(slide), str(tmp_path / "out"), options=opts)
+    a = res.feather_ids[0]
+    assert a["needs_review"] == "" and a["repair"].startswith("holes filled (before: holes or gaps)")
+    assert a["judge_hole_frac"] == 0 and client.judge_calls == 3      # A, its repair, B
+    assert "repair" not in res.feather_ids[1]
+    off = p.process_image(str(slide), str(tmp_path / "out2"))
+    assert off.feather_ids[0]["needs_review"] == "holes or gaps"      # repair is off by default
 
 
 def test_retry_and_choice_follow_the_checks():

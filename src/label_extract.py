@@ -788,14 +788,14 @@ FEATHER_TABLE_COLS = [
     "duplicate_of", "needs_review", "label_needs_review",
     "bird_id", "bird_id_status", "bird_id_source", "species", "species_status", "age", "age_status",
     "sex", "sex_status", "year", "month", "day", "date_status", "year_source", "period",
-    "crop", "qc_image", "bbox", "area_px", "length_px", "width_px", "angle_deg", "touches_border",
+    "crop", "qc_image", "mask_image", "bbox", "area_px", "length_px", "width_px", "angle_deg", "touches_border",
     "sam_score", "sam_masks", "postprocess",
     # per-feather checks (src/feather_judge.py): score is derived from the checks
     "judge_status", "judge_score", "judge_segment_ok", "judge_sides_cut", "judge_outline_left",
     "judge_outline_right", "judge_outline_top", "judge_outline_bottom", "judge_holes_or_gaps", "judge_holes",
     "judge_hole_frac", "judge_mask_parts", "judge_single_feather", "judge_fragment", "judge_other_feather_inside",
-    "judge_other_material_inside", "judge_model_score", "judge_notes", "judge_error",
-    "review_uncertain", "judge_uncertain_checks",
+    "judge_other_material_inside", "judge_glue_inside", "judge_hidden", "judge_model_score", "judge_notes", "judge_error",
+    "review_uncertain", "judge_uncertain_checks", "repair", "repair_tried",
     # missed feathers (src/feather_inventory.py): slide-level result repeated per row
     "missed_x", "missed_between", "missed_partly_hidden", "inventory_status", "inventory_total",
     "feathers_segmented", "feathers_possibly_missed", "inventory_note", "inventory_image",

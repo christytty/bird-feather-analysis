@@ -6,12 +6,17 @@ Rules for a good segment (the same for any feather on any slide):
   2. no holes or gaps: the mask is one solid piece with nothing of the
      feather missing inside it
   3. exactly one feather, not a fragment, and nothing else inside the mask
+     (glue at the quill is asked about on its own: the catch-all question missed it)
+  4. the whole feather is visible: a feather partly under the board, card, tape
+     or another feather cannot be measured whole (flagged, though its outline may
+     be right)
 
 Rule 2 is measured directly on the mask (holes = background enclosed by the
 mask; parts = separate pieces of the mask). The VLM checks rule 1 per side,
 and rules 2-3 by eye, looking at two panels: LEFT the slide around the
-feather with the mask outline, RIGHT exactly the pixels inside the mask (the
-untrimmed segmentation; the saved crop's bottom trim is not judged here).
+feather with the mask outline, RIGHT exactly the pixels inside the mask. Which
+mask is judged: the saved crop's (bottom trimmed, feather_judge.judge_mask
+"saved") or the untrimmed segmentation ("full").
 
 Decisions (needs_review, segment_ok, the retry in full_run_sharded) use the
 checks themselves. The 1-10 `score` is computed from them with the fixed
@@ -30,10 +35,14 @@ from PIL import Image
 
 SIDES = ("left", "right", "top", "bottom")
 BOOLS = ("holes_or_gaps", "single_feather", "fragment", "other_material_inside", "other_feather_inside")
+# asked by newer prompts only; parsed when present
+OPTIONAL_BOOLS = ("glue_inside",)
+HIDDEN = ("none", "part", "most")   # how much of the feather is hidden under board, card, tape, another feather
 # used when the config has no feather_judge.score (same values as the shipped config)
 DEFAULT_SCORE = {"start": 10, "min": 1, "deduct": {"side_cut": 2, "holes_or_gaps": 3, "fragment": 4,
                                                    "not_single_feather": 4, "other_feather_inside": 3,
-                                                   "other_material_inside": 2}}
+                                                   "other_material_inside": 2, "glue_inside": 2,
+                                                   "hidden_part": 3, "hidden_most": 8}}
 
 
 # ---------------------------------------------------------------- measured on the mask
@@ -73,6 +82,16 @@ def context_panel(slide_bgr: np.ndarray, mask: np.ndarray, cfg: dict) -> Image.I
     cnts, _ = cv2.findContours(sub, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)   # outer edges and holes
     cv2.drawContours(left, cnts, -1, (0, 255, 0), max(2, int(min(left.shape[:2]) / 300)))
     right = np.where(sub[:, :, None] > 0, slide_bgr[y0:y1, x0:x1], 0).astype(np.uint8)
+    if cfg.get("enhance_contrast"):
+        # local contrast (CLAHE on lightness), so pale barbs on white card and dark barbs on the
+        # board stand out from the background; the same mapping on both panels
+        lab = cv2.cvtColor(slide_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2LAB)
+        clahe = cv2.createCLAHE(clipLimit=float(cfg.get("contrast_clip", 3.0)), tileGridSize=(8, 8))
+        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+        enh = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        left = enh.copy()
+        cv2.drawContours(left, cnts, -1, (0, 255, 0), max(2, int(min(left.shape[:2]) / 300)))
+        right = np.where(sub[:, :, None] > 0, enh, 0).astype(np.uint8)
     ph = int(cfg.get("panel_height", 900))
 
     def fit(img):
@@ -105,6 +124,8 @@ def derive_score(r: dict, score_cfg: dict | None = None) -> int:
     s -= d["not_single_feather"] * (r.get("single_feather") is False)
     s -= d["other_feather_inside"] * bool(r.get("other_feather_inside"))
     s -= d["other_material_inside"] * bool(r.get("other_material_inside"))
+    s -= d["glue_inside"] * bool(r.get("glue_inside"))
+    s -= d["hidden_part"] * (r.get("hidden") == "part") + d["hidden_most"] * (r.get("hidden") == "most")
     return max(sc["min"], s)
 
 
@@ -125,6 +146,15 @@ def parse(text: str, score_cfg: dict | None = None) -> dict:
         if not isinstance(v, bool):
             return {"status": "model_error", "error": f"{k} must be true|false, got {v!r}"}
         out[k] = v
+    for k in OPTIONAL_BOOLS:
+        if k in d:
+            if not isinstance(d[k], bool):
+                return {"status": "model_error", "error": f"{k} must be true|false, got {d[k]!r}"}
+            out[k] = d[k]
+    if "hidden" in d:
+        if str(d["hidden"]).strip().lower() not in HIDDEN:
+            return {"status": "model_error", "error": f"hidden must be none|part|most, got {d['hidden']!r}"}
+        out["hidden"] = str(d["hidden"]).strip().lower()
     ms = d.get("model_score", d.get("score"))
     out["model_score"] = float(ms) if isinstance(ms, (int, float)) and 1 <= ms <= 10 else None
     notes = str(d.get("notes") or "")
@@ -139,7 +169,7 @@ def _finish(res: dict, score_cfg: dict | None) -> None:
 
 
 _PASS = {"holes_or_gaps": False, "single_feather": True, "fragment": False, "other_feather_inside": False,
-         "other_material_inside": False}
+         "other_material_inside": False, "glue_inside": False, "hidden": "none"}
 
 
 def _model_failures(res: dict) -> set[str]:
@@ -218,6 +248,10 @@ def failed_checks(rec: dict, prefix: str = "judge_") -> list[str]:
         why.append("other feather inside")
     if g("other_material_inside"):
         why.append("non-feather material inside")
+    if g("glue_inside"):
+        why.append("glue inside")
+    if g("hidden") in ("part", "most"):
+        why.append(f"{'partly' if g('hidden') == 'part' else 'mostly'} hidden")
     return why
 
 
@@ -248,7 +282,8 @@ def uncertain_review(rec: dict, prefix: str = "judge_") -> str:
     names = {"outline_left": "outline cut: left", "outline_right": "outline cut: right",
              "outline_top": "outline cut: top", "outline_bottom": "outline cut: bottom",
              "holes_or_gaps": "holes or gaps", "single_feather": "not a single feather", "fragment": "fragment",
-             "other_feather_inside": "other feather inside", "other_material_inside": "non-feather material inside"}
+             "other_feather_inside": "other feather inside", "other_material_inside": "non-feather material inside",
+             "glue_inside": "glue inside", "hidden": "hidden under something"}
     return "; ".join(names.get(c, c) for c in rec.get(prefix + "uncertain_checks") or [])
 
 

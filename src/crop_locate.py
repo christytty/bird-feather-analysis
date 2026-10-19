@@ -33,11 +33,23 @@ def locate(slide_gray: np.ndarray, crop_bgr: np.ndarray, scale: float = 0.25) ->
     return X, Y, float(score)
 
 
+def fill_pinholes(m: np.ndarray, max_frac: float = 1.0) -> np.ndarray:
+    """Near-black feather pixels (dark vane after equalization) fall below the
+    crop's black threshold and leave pinholes and whole dark patches, which the
+    judge then reports as holes. Fill enclosed holes smaller than max_frac of the
+    mask (by default all of them: a rebuilt mask cannot tell a real hole in the
+    segmentation from dark vane, and real holes are rare and small)."""
+    n, lbl, st, _ = cv2.connectedComponentsWithStats((~m).astype(np.uint8), connectivity=4)
+    fill = st[:, cv2.CC_STAT_AREA] < max_frac * int(m.sum())
+    fill[np.unique(np.concatenate([lbl[0], lbl[-1], lbl[:, 0], lbl[:, -1]]))] = False   # outside the mask
+    return m | fill[lbl]
+
+
 def crop_mask(slide_bgr: np.ndarray, crop_bgr: np.ndarray) -> tuple[np.ndarray, float]:
     """Slide-sized bool mask of the crop's feather, and the match score."""
     gray = cv2.cvtColor(slide_bgr, cv2.COLOR_BGR2GRAY)
     x, y, score = locate(gray, crop_bgr)
-    cm = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY) > 8
+    cm = fill_pinholes(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY) > 8)
     mask = np.zeros(gray.shape, bool)
     h, w = min(cm.shape[0], gray.shape[0] - y), min(cm.shape[1], gray.shape[1] - x)
     mask[y:y + h, x:x + w] = cm[:h, :w]
