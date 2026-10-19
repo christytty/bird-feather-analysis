@@ -403,12 +403,12 @@ class VLMClient:
         self.retries = int(cfg.get("retries", 2))
         self.timeout = float(cfg.get("timeout", 180))
 
-    def _ask_once(self, image: Image.Image, prompt: str) -> str:
+    def _ask_once(self, image: Image.Image, prompt: str, max_tokens: int | None = None) -> str:
         with self._lock:
             base = next(self._endpoints)
         body = {
             "model": self.cfg["model"],
-            "max_tokens": self.cfg.get("max_tokens", 120),
+            "max_tokens": int(max_tokens or self.cfg.get("max_tokens", 120)),
             "temperature": self.cfg.get("temperature", 0),
             "messages": [{"role": "user", "content": [
                 {"type": "image_url", "image_url": {"url": _data_url(image)}},
@@ -421,13 +421,16 @@ class VLMClient:
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             return json.load(r)["choices"][0]["message"]["content"]
 
-    def ask(self, image: Image.Image, prompt: str, timeout: float | None = None) -> str:
+    def ask(self, image: Image.Image, prompt: str, timeout: float | None = None,
+            max_tokens: int | None = None) -> str:
+        """`max_tokens`: answer length for this call (default: the label config's,
+        sized for short field answers)."""
         if timeout:
             self.timeout = timeout
         last: Exception | None = None
         for i in range(self.retries + 1):
             try:
-                return self._ask_once(image, prompt)
+                return self._ask_once(image, prompt, max_tokens)
             except Exception as exc:  # noqa: BLE001
                 last = exc
                 if i < self.retries:
@@ -446,11 +449,12 @@ class MLXLocalClient:
         self.chat_prompt, self.model_name, self.max_tokens = chat_prompt, model_name, max_tokens
         self._lock = Lock()  # one MLX generation at a time per process
 
-    def ask(self, image: Image.Image, prompt: str, timeout: float | None = None) -> str:
+    def ask(self, image: Image.Image, prompt: str, timeout: float | None = None,
+            max_tokens: int | None = None) -> str:
         with self._lock, tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
             image.save(tmp.name, "JPEG", quality=92)
             out = self.generate(self.model, self.processor, prompt=self.chat_prompt(prompt),
-                                image=[tmp.name], max_tokens=self.max_tokens)
+                                image=[tmp.name], max_tokens=int(max_tokens or self.max_tokens))
         text = getattr(out, "text", str(out))
         return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
 
@@ -1088,7 +1092,10 @@ def run_distributed(chosen: list[str], out: Path, remote_output_dir: str | None 
                 f"{rc.remote_repo_dir}/data/runs/labels-{out.name}/processed")
     out.mkdir(parents=True, exist_ok=True)
     lock = Lock()
-    pending = {app.send_task("src.celery_tasks.extract_labels", args=[p, remote_output_dir]): p for p in chosen}
+    from src.notebook_remote_runtime import task_queue
+
+    pending = {app.send_task("src.celery_tasks.extract_labels", args=[p, remote_output_dir], queue=task_queue()): p
+               for p in chosen}
     log(f"sent {len(pending)} label tasks to the workers -> {remote_output_dir}")
     deadline = time.time() + timeout
     while pending and time.time() < deadline:
@@ -1251,7 +1258,8 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
     summary["possible_missed_feathers"] = sum(f.get("segment_status") == "possible_missed"
                                               for r in results for f in r.feathers)
     summary["duplicate_feathers"] = sum(bool(f.get("duplicate_of")) for r in results for f in r.feathers)
-    scored = [f["judge_score"] for r in results for f in r.feathers if isinstance(f.get("judge_score"), float)]
+    scored = [f["judge_score"] for r in results for f in r.feathers
+              if isinstance(f.get("judge_score"), (int, float)) and not isinstance(f.get("judge_score"), bool)]
     summary["feathers_scored"] = len(scored)
     summary["feather_score_mean"] = round(sum(scored) / len(scored), 2) if scored else None
     summary["feathers_needing_review"] = sum(bool(f.get("needs_review")) for r in results for f in r.feathers)

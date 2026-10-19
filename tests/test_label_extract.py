@@ -38,7 +38,7 @@ class FakeClient:
         self.replies = list(replies)
         self.calls = 0
 
-    def ask(self, image, prompt, timeout=None):
+    def ask(self, image, prompt, timeout=None, max_tokens=None):
         self.calls += 1
         r = self.replies.pop(0)
         if isinstance(r, Exception):

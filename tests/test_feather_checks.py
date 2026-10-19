@@ -52,7 +52,7 @@ class _Client:
     def __init__(self, text):
         self.text = text
 
-    def ask(self, image, prompt):
+    def ask(self, image, prompt, max_tokens=None):
         return self.text
 
 

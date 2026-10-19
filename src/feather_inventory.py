@@ -117,7 +117,7 @@ def check(client, slide_bgr: np.ndarray, masks: list[np.ndarray], cfg: dict) -> 
     order = sorted(range(len(masks)), key=lambda i: centers[i])
     overlay = numbered_overlay(slide_bgr, [masks[i] for i in order], cfg.get("max_side", 1400))
     try:
-        raw = client.ask(overlay, cfg["prompt"])
+        raw = client.ask(overlay, cfg["prompt"], max_tokens=cfg.get("max_tokens", 400))
         inv = parse(raw, len(masks))
     except Exception as exc:  # noqa: BLE001
         raw, inv = "", {"status": "model_error", "error": f"{type(exc).__name__}: {exc}"}

@@ -93,6 +93,14 @@ def assert_tcp_reachable(url: str, name: str, timeout: float = 1.5) -> None:
         sock.close()
 
 
+def task_queue() -> str | None:
+    """Queue for jobs sent from here (FEATHER_TASK_QUEUE). Workers started with
+    -Q <queue> take only those jobs, so a second set of workers on newer code
+    can run next to older ones without the two picking up each other's work."""
+    q = os.getenv("FEATHER_TASK_QUEUE", "").strip()
+    return q or None
+
+
 def create_celery_client(config: RemoteNotebookConfig) -> Celery:
     # Keep env vars in sync so any downstream imports see the same broker settings.
     os.environ["BROKER_URL"] = config.broker_url

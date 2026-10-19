@@ -61,7 +61,7 @@ class DateClient:
         self.date, self.cut, self.holes, self.total, self.missed = date, list(cut), holes, total, list(missed)
         self.judge_calls = 0
 
-    def ask(self, image, prompt, timeout=None):
+    def ask(self, image, prompt, timeout=None, max_tokens=None):
         if "Outline, side by side" in prompt:
             self.judge_calls += 1
             outline = {s: ("cut" if s in self.cut else "complete") for s in ("left", "right", "top", "bottom")}
