@@ -29,6 +29,8 @@ DEFAULTS = {
     "align_angle_deg": 12.0,      # rule 3: axes within this angle
     "align_offset_frac": 0.6,     # rule 3: sideways offset below this share of the wider width
     "align_gap_frac": 0.2,        # rule 3: gap along the axis below this share of the joint length
+    "align_max_overlap_frac": 0.25,  # rule 3: overlap along the axis at most this share of the shorter
+                                     # piece (end to end, not side by side)
     "min_area_frac": 0.002,       # masks smaller than this share of the slide are noise
 }
 
@@ -85,6 +87,10 @@ def _aligned(sa: dict, sb: dict, cfg: dict) -> bool:
     if across > cfg["align_offset_frac"] * max(sa["width"], sb["width"]):
         return False
     gap = along - (sa["length"] + sb["length"]) / 2
+    # pieces of one feather lie end to end; parallel feathers side by side overlap along
+    # most of their length (negative gap) and must stay separate
+    if -gap > cfg.get("align_max_overlap_frac", 0.25) * min(sa["length"], sb["length"]):
+        return False
     return gap < cfg["align_gap_frac"] * (sa["length"] + sb["length"])
 
 

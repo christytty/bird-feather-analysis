@@ -60,3 +60,16 @@ def test_single_small_feather_slide_kept():
 def test_shape_stats_long_axis_angle():
     s = sp.shape_stats(feather(400, 300, angle=30))
     assert 395 < s["length"] < 405 and 65 < s["width"] < 75
+
+
+def test_overlapping_parallel_feathers_are_not_joined_as_aligned_pieces():
+    """BB17692 1998-im0513: feathers laid partly over each other, side by side.
+    Same axis and small sideways offset, but they overlap along their whole
+    length, so they are two feathers, not two pieces of one."""
+    a, b = feather(380, 300), feather(420, 320)          # 40 px apart sideways, overlapping
+    others = [feather(150, 300), feather(650, 300)]
+    out = sp.clean_masks([a, b] + others, [0.9] * 4)
+    assert len(out) == 4 and not any("aligned pieces" in n for p in out for n in p.notes)
+    # the old rule (no overlap limit) joined them: the test really covers the case
+    old = sp.clean_masks([a, b] + others, [0.9] * 4, {"align_max_overlap_frac": 10})
+    assert len(old) == 3 and any("aligned pieces" in n for p in old for n in p.notes)
