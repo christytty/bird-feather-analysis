@@ -9,6 +9,7 @@ from glob import glob
 
 import redis
 
+from src import label_extract as lx
 from src.feather_processing import FeatherProcessor
 
 
@@ -101,8 +102,23 @@ def _init_stats_db(db_path: str) -> sqlite3.Connection:
     if "vlm_notes" not in existing_cols:
         conn.execute("ALTER TABLE image_stats ADD COLUMN vlm_notes TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_image_stats_run ON image_stats(run_id)")
+    # Specimen label table lives next to image_stats (one row per run/node/slide).
+    lx.ensure_label_table(conn)
     conn.commit()
     return conn
+
+
+def _emit_labels(client: redis.Redis | None, run_id: str, node_id: str, counters: dict[str, int]) -> None:
+    if client is None or not counters:
+        return
+    try:
+        pipe = client.pipeline()
+        for key in (f"feather:run:{run_id}:totals", f"feather:run:{run_id}:node:{node_id}"):
+            for name, val in counters.items():
+                pipe.hincrby(key, name, int(val))
+        pipe.execute()
+    except Exception as exc:  # noqa: BLE001
+        print(f"metrics label emit failed: {exc}")
 
 
 def _upsert_stats_row(conn: sqlite3.Connection, row: dict) -> None:
@@ -326,6 +342,22 @@ def _emit_run_complete(
         print(f"metrics completion emit failed: {exc}")
 
 
+def qa_penalty(res) -> int:
+    """Failed per-feather checks, judge errors and possible missed feathers
+    (src/feather_judge.slide_checks); lower is better. Not a score."""
+    c = getattr(res, "qa_checks", None) or {}
+    return int(c.get("checks_failed", 0)) + int(c.get("judge_errors", 0)) + 2 * int(c.get("possible_missed", 0))
+
+
+def should_retry(res) -> bool:
+    """Retry with the broader prompts when any kept feather failed a check or
+    the inventory flags a possibly missed or merged feather."""
+    if not res.success:
+        return False
+    c = getattr(res, "qa_checks", None) or {}
+    return bool(c.get("feathers_failing") or c.get("possible_missed") or c.get("merged_feathers"))
+
+
 def run_shard(
     input_dir: str,
     output_dir: str,
@@ -349,6 +381,8 @@ def run_shard(
     local_state_path = os.path.join(metrics_dir, f"{run_id}_{_safe_node_label(node_id)}.json")
     events_jsonl_path = os.path.join(metrics_dir, f"{run_id}_{_safe_node_label(node_id)}_events.jsonl")
     stats_db_path = os.path.join(metrics_dir, "run_stats.sqlite3")
+    # per-feather output table for this node (one row per kept feather crop)
+    feathers_csv_path = os.path.join(metrics_dir, f"{run_id}_{_safe_node_label(node_id)}_feathers.csv")
     stats_conn = _init_stats_db(stats_db_path)
 
     local_state: dict[str, object] = {
@@ -411,55 +445,44 @@ def run_shard(
     processor = FeatherProcessor()
     ok = 0
 
-    def qa_penalty(res) -> int:
-        penalty = 0
-        if res.vlm_green_boxes_grouped_feathers is True:
-            # Grouped-box flag is common; penalize hard only when extraction count is low.
-            penalty += 2 if int(res.feathers_saved) <= 3 else 1
-        if res.vlm_background_leakage_detected is True:
-            penalty += 2
-        if res.vlm_all_feathers_covered is False:
-            penalty += 2
-        if res.vlm_score is not None:
-            penalty += max(0, int(10 - float(res.vlm_score)))
-        return penalty
-
-    def should_retry(res) -> bool:
-        if not res.success:
-            return False
-        low_score = res.vlm_score is not None and float(res.vlm_score) <= 6.5
-        low_feather_count = int(res.feathers_saved) <= 4
-        return (
-            (res.vlm_green_boxes_grouped_feathers is True and (low_score or low_feather_count))
-            or res.vlm_background_leakage_detected is True
-            or res.vlm_all_feathers_covered is False
-        )
-
     for idx, path in enumerate(selected, start=1):
+        # Label table from the original slide, before (and independent of) segmentation.
+        labels = processor.extract_labels(path, output_dir)
+        if labels is not None:
+            lx.upsert_labels(stats_conn, [labels], run_id, node_id=node_id)
+            label_counters = lx.label_metrics(labels)
+            for name, val in label_counters.items():
+                local_state[name] = int(local_state.get(name, 0)) + val
+            local_state["labels_seconds_sum"] = float(local_state.get("labels_seconds_sum", 0.0)) + labels.seconds
+            _emit_labels(metrics_redis, run_id, node_id, label_counters)
         t0 = time.perf_counter()
-        result = processor.process_image(path, output_dir, profile="default")
+        result = processor.process_image(path, output_dir, profile="default", labels=labels)
         retry_used = False
         retry_selected = False
         if should_retry(result):
             retry_used = True
-            retry_result = processor.process_image(path, output_dir, profile="strict_retry")
+            retry_result = processor.process_image(path, output_dir, profile="strict_retry", labels=labels)
             if retry_result.success:
                 base_penalty = qa_penalty(result)
                 retry_penalty = qa_penalty(retry_result)
-                choose_retry = False
+                # fewer failed checks wins; a tie keeps the first attempt
                 if retry_penalty < base_penalty:
-                    choose_retry = True
-                elif retry_penalty == base_penalty:
-                    if retry_result.vlm_score is not None and result.vlm_score is not None:
-                        choose_retry = float(retry_result.vlm_score) >= float(result.vlm_score)
-                    else:
-                        choose_retry = True
-                if choose_retry:
                     result = retry_result
                     retry_selected = True
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         if result.success:
             ok += 1
+        slide = labels if labels is not None else (
+            lx.bare_result(path, result.feather_ids) if result.feather_ids else None)
+        if slide is not None:
+            # Feathers actually kept (the retry may have won), with their scores.
+            slide.feathers = result.feather_ids
+            if labels is not None:
+                lx.save_pipeline_result(labels, output_dir)
+            lx.upsert_labels(stats_conn, [slide], run_id, node_id=node_id)
+            lx.append_feathers_csv(slide, feathers_csv_path, run_id, node_id)
+            local_state["feathers_review"] = int(local_state.get("feathers_review", 0)) + sum(
+                bool(f.get("needs_review")) for f in result.feather_ids)
 
         local_state["processed"] = int(local_state["processed"]) + 1
         local_state["success"] = int(local_state["success"]) + (1 if result.success else 0)
@@ -525,6 +548,7 @@ def run_shard(
                 "retry_used": retry_used,
                 "retry_selected": retry_selected,
                 "profile_selected": result.processing_profile,
+                "labels": None if labels is None else {n: f.status for n, f in labels.fields.items()},
             },
         )
         _upsert_stats_row(
