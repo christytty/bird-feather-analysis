@@ -303,10 +303,6 @@ class FeatherProcessor:
         if ex.get("enabled"):
             out = sam3_extras.exemplar_pass(self.sam3, image_path, img_pil.size, prompts[0].rstrip("."), out, ex,
                                             nms_iou, max_box_area_ratio, seg.get("conf"))
-        spl = seg.get("split") or {}
-        if spl.get("enabled") and not out[2]:
-            out, info = sam3_extras.split_merged(self.sam3, image_path, prompts[0].rstrip("."), out, spl)
-            logging.info("sam3.split %s", info)
         if ref.get("enabled") and not out[2]:
             if self._sam3_inter is None:
                 from ultralytics.models.sam import SAM3Predictor
