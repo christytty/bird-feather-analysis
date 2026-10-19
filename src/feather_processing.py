@@ -80,6 +80,8 @@ class FeatherProcessor:
         if self.segmenter == "sam3":
             from ultralytics.models.sam import SAM3SemanticPredictor
 
+            self.sam3_weights = weights
+            self._sam3_inter = None      # interactive predictor for sam3.refine, loaded on first use
             self.sam3 = SAM3SemanticPredictor(overrides={
                 "conf": float(os.getenv("FEATHER_SAM3_CONF", "0.25")),
                 "task": "segment",
@@ -290,6 +292,29 @@ class FeatherProcessor:
         return ([boxes[int(i)] for i in keep], [masks[int(i)] for i in keep], "",
                 [scores[int(i)] for i in keep])
 
+    def _sam3_extras(self, image_path, img_pil, out, seg, prompts, nms_iou, max_box_area_ratio):
+        """Optional steps after the text prompt (src/sam3_extras.py), each switched
+        on in configs/segmentation.json: sam3.exemplar, then sam3.refine."""
+        from src import sam3_extras
+
+        ex, ref = seg.get("exemplar") or {}, seg.get("refine") or {}
+        if getattr(self, "sam3", None) is None:      # no SAM 3 model loaded (e.g. a stand-in in tests)
+            return out
+        if ex.get("enabled"):
+            out = sam3_extras.exemplar_pass(self.sam3, image_path, img_pil.size, prompts[0].rstrip("."), out, ex,
+                                            nms_iou, max_box_area_ratio, seg.get("conf"))
+        if ref.get("enabled") and not out[2]:
+            if self._sam3_inter is None:
+                from ultralytics.models.sam import SAM3Predictor
+
+                self._sam3_inter = SAM3Predictor(overrides={
+                    "model": self.sam3_weights, "imgsz": int(os.getenv("FEATHER_SAM3_IMGSZ", "1008")),
+                    "task": "segment", "mode": "predict", "save": False, "verbose": False,
+                    "device": "mps" if torch.backends.mps.is_available() else "cpu"})
+            out, info = sam3_extras.refine_pass(self._sam3_inter, image_path, out, ref)
+            logging.info("sam3.refine %s", info)
+        return out
+
     def _segment_dino_sam2(self, image_path, img_pil, prompts, score_thresh, nms_iou, max_box_area_ratio, shrink):
         """Original path: Grounding DINO boxes, then SAM 2.1 masks for them."""
         boxes_with_scores: list[list[float]] = []
@@ -365,6 +390,8 @@ class FeatherProcessor:
             else:
                 out = self._segment_dino_sam2(image_path, img_pil, prompts, score_thresh, nms_iou,
                                               max_box_area_ratio, seg.get("shrink", 0.02))
+            if self.segmenter == "sam3" and not out[2]:
+                out = self._sam3_extras(image_path, img_pil, out, seg, prompts, nms_iou, max_box_area_ratio)
             boxes, mask_list, reason = out[:3]
             mask_scores = list(out[3]) if len(out) > 3 else [1.0] * len(mask_list)
             if reason:
