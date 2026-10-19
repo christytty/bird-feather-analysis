@@ -12,6 +12,22 @@ from src import label_extract as lx
 feather_pkgs = pytest.importorskip("redis")
 
 
+@pytest.fixture(autouse=True)
+def _rectangles_are_not_hidden(monkeypatch):
+    """These tests use rectangular masks on white: straight edges (the measured 'hidden' check)
+    and a white 'card' (the glue clean-up's cut to the full vane) would change every result.
+    Both are tested on their own (test_feather_checks, test_mask_cleanup)."""
+    from src import feather_processing as fp
+
+    real = fp.load_seg_config
+
+    def cfg(overrides=None):
+        base = {"crop": {"cleanup": {"enabled": False}}, "feather_judge": {"hidden": {"enabled": False}}}
+        return real(fp._deep_merge(base, overrides))
+
+    monkeypatch.setattr(fp, "load_seg_config", cfg)
+
+
 class StubResult:
     def __init__(self, path, success):
         self.image_path, self.success = path, success
@@ -410,16 +426,16 @@ def test_fragment_gets_no_letter_or_feather_id(tmp_path):
     frag = res.feather_ids[3]
     assert frag["needs_review"].startswith("fragment") and (out / frag["qc_image"]).exists()
     assert frag["qc_image"] == "feather_qc/CE01168_2008_Fragment_1_qc.jpg"
-    # whole feathers are never fragments, even when the model says so (flagged instead)
-    assert res.feather_ids[0]["needs_review"] == "fragment"
+    # whole feathers are never fragments, even when the model says so: without the clean-up's
+    # small/narrow mark the model's 'fragment' is only listed (feather_judge.needs_support)
+    assert res.feather_ids[0]["needs_review"] == "" and res.feather_ids[0]["review_uncertain"] == "fragment"
     assert res.feathers_saved == 3 and res.qa_checks["fragments"] == 1
     assert sorted(f.name for f in out.glob("*_Fragment_*.jpg")) == ["CE01168_2008_Fragment_1.jpg"]
     row = labels.row()
     assert row["feather_count"] == 3 and row["feather_ids"] == "CE01168V_2008_A;CE01168V_2008_B;CE01168V_2008_C"
     rows = lx.feather_table_rows(labels, "r")
     assert [(r["seq"], r["usable"], r["excluded_because"]) for r in rows] == [
-        ("A", "no", "check: fragment"), ("B", "no", "check: fragment"), ("C", "no", "check: fragment"),
-        ("fragment_1", "no", "fragment")]
+        ("A", "yes", ""), ("B", "yes", ""), ("C", "yes", ""), ("fragment_1", "no", "fragment")]
     assert [p["kind"] for p in lx.slide_problems(labels, None, {})].count("fragment") == 1
 
 

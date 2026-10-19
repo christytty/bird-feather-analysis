@@ -155,3 +155,38 @@ def test_second_look_only_when_something_failed_and_never_clears_on_an_error():
     c = _SeqClient(_answer(left="cut"))
     res, _ = fj.judge(c, slide, _mask(), None, {"prompt": "x", "panel_height": 200})
     assert c.calls == 1 and res["sides_cut"] == ["left"]
+
+
+def test_straight_outline_and_hidden_level():
+    import numpy as np
+    from src import feather_judge as fj
+
+    ragged = np.zeros((400, 200), bool)
+    yy, xx = np.mgrid[0:400, 0:200]
+    wobble = 6 * np.sin(yy / 4.0)                                                   # barbs: a ragged edge
+    ragged[((xx - 100 + wobble) / 60.0) ** 2 + ((yy - 200) / 180.0) ** 2 <= 1] = True
+    cut = ragged.copy()
+    cut[:, 110:] = False                                                            # a board edge down its length
+    (t0, l0), (t1, l1) = fj.straight_outline(ragged), fj.straight_outline(cut)
+    assert t0 < 0.2 and t1 >= 0.45 and l1 >= 0.2
+    cfg = {"hidden": {}}
+    assert fj.hidden_level(t0, l0, 1.0, cfg) == "none"
+    assert fj.hidden_level(t1, l1, 1.0, cfg) == "part"
+    assert fj.hidden_level(t1, l1, 0.3, cfg) == "most"
+    assert fj.hidden_level(0.5, 0.19, 1.0, cfg) == "none"     # several short straight runs: a vane edge
+
+
+def test_model_only_holes_and_fragments_need_support():
+    from src import feather_judge as fj
+
+    cfg = {"needs_support": ["holes_or_gaps", "fragment"], "fail_hole_frac": 0.02}
+    rec = {"judge_status": "ok", "judge_sides_cut": [], "judge_holes_or_gaps": True, "judge_hole_frac": 0.0,
+           "judge_mask_parts": 1, "judge_single_feather": True, "judge_fragment": True,
+           "judge_other_feather_inside": False, "judge_other_material_inside": False, "judge_score": 3}
+    fj.demote_unsupported(rec, cfg)
+    assert fj.failed_checks(rec) == [] and rec["judge_score"] == 10
+    assert rec["judge_uncertain_checks"] == ["fragment", "holes_or_gaps"]
+    backed = {**rec, "judge_holes_or_gaps": True, "judge_hole_frac": 0.05, "judge_fragment": True,
+              "postprocess": "possible fragment (small or narrow, not touching another feather)"}
+    fj.demote_unsupported(backed, cfg)
+    assert fj.failed_checks(backed) == ["holes or gaps", "fragment"]

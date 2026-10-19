@@ -48,14 +48,39 @@
   },
   "crop": {
     "trim_bottom_frac": 0.12,
-    "max_feathers": 8
+    "max_feathers": 8,
+    "cleanup": {
+      "_comment": "Glue and card removed from a mask before cropping (src/mask_cleanup.py): textureless patches touching the mask's edge (structure-tensor coherence below `coherence`) are cut off with everything below them when in the bottom `base_frac` of the feather, else removed; a narrow quill neck with a blob `neck_blob_ratio` times wider below it is cut at the neck. The crop's bottom is the higher of the cut and the trim line.",
+      "enabled": true,
+      "texture": true,
+      "sigma": 4.0,
+      "coherence": 0.25,
+      "min_patch_frac": 0.004,
+      "base_frac": 0.35,
+      "neck": true,
+      "neck_search_frac": 0.35,
+      "neck_blob_ratio": 2.5,
+      "neck_max_frac": 0.12,
+      "min_keep_frac": 0.6,
+      "glue_search_frac": 0.15,
+      "glue_margin_frac": 0.005,
+      "quill_widen": 1.3,
+      "quill_max_frac": 0.6,
+      "vane_base": {
+        "enabled": true,
+        "min_width_frac": 0.5,
+        "run_frac": 0.015,
+        "search_frac": 0.4,
+        "card_min_lightness": 150
+      }
+    }
   },
   "feather_judge": {
     "enabled": true,
     "context_margin_frac": 0.15,
     "panel_height": 900,
     "max_tokens": 220,
-    "prompt": "Reply with only the JSON object described at the end: no explanation, reasoning or text before or after it.\n\nYou are checking the segmentation of ONE feather on a scanned specimen slide. The image has two panels.\nLEFT: the slide around this feather, with the segmentation outline drawn as a thin green line (green lines inside the feather mark holes in the segmentation). Other feathers and the slide background may also be visible.\nRIGHT: exactly the pixels inside that outline, on black. Anything black in the RIGHT panel is NOT in the segmentation.\n\nCompare the two panels and answer every check. Judge only what you can see; do not assume anything that is not visible.\nWhen you are unsure about a check, give the answer that flags a problem (\"cut\", or true; for single_feather, false). A person looks at every flagged feather; a wrong pass is never looked at again.\n\n1. Outline, side by side: for each side of this feather as it appears in the image (left, right, top, bottom), answer \"cut\" if any visible part of THIS feather (vane, barbs, fringe, tip, shaft or base, including pale, white or translucent parts) extends beyond the green line on that side; otherwise answer \"complete\". A part hidden under something else on the slide (card, board, tape, another feather) does not count as cut.\n2. Holes and gaps: answer true if any part of this feather inside its outline is missing from the RIGHT panel (a hole, gap, notch or band that is black on the RIGHT but feather on the LEFT), or if the segmentation is split into separate pieces. Natural separations between barbs that look the same on both panels are not holes.\n3. One feather: single_feather is true only if the outline holds exactly one feather; fragment is true if it holds only a piece of a feather while the rest of that feather is visible outside it.\n4. Nothing else: other_feather_inside is true if any part of a different feather is inside the outline, however small. other_material_inside is true if anything that is not feather (slide background, card, board, tape, label, glue, shadow) is inside the outline beyond a thin rim. A thin rim is a band of background that follows the outline and is only a few pixels wide (no wider than about twice the green line). A wider band, or a patch of background anywhere that does not follow the outline, counts as other material.\n\nAnswer with JSON only, no other text:\n{\"outline\": {\"left\": \"complete\"|\"cut\", \"right\": \"complete\"|\"cut\", \"top\": \"complete\"|\"cut\", \"bottom\": \"complete\"|\"cut\"}, \"holes_or_gaps\": true|false, \"single_feather\": true|false, \"fragment\": true|false, \"other_feather_inside\": true|false, \"other_material_inside\": true|false, \"model_score\": <1-10: 10 = usable as is for measuring this feather, 1 = unusable>, \"notes\": \"<at most 20 words: which check failed and where, or ok>\"}",
+    "prompt": "Reply with only the JSON object described at the end: no explanation, reasoning or text before or after it.\n\nYou are checking the segmentation of ONE feather on a scanned specimen slide. The image has two panels.\nLEFT: the slide around this feather, with the segmentation outline drawn as a thin green line (green lines inside the feather mark holes in the segmentation). Other feathers and the slide background may also be visible.\nRIGHT: exactly the pixels inside that outline, on black. Anything black in the RIGHT panel is NOT in the segmentation.\n\nCompare the two panels and answer every check. Judge only what you can see; do not assume anything that is not visible.\nWhen you are unsure about a check, give the answer that flags a problem (\"cut\", or true; for single_feather, false). A person looks at every flagged feather; a wrong pass is never looked at again.\n\nThe bottom of the feather may be cut off on purpose (the quill, glue and the thin lower vane on the card are removed): the bottom of the outline may then be a straight horizontal line across the feather or its quill. That straight cut is not a fault: answer \"complete\" for the bottom when the only cut there is that straight line, and do not count it as a fragment; ignore everything below it.\n\n1. Outline, side by side: for each side of this feather as it appears in the image (left, right, top, bottom), answer \"cut\" if any visible part of THIS feather (vane, barbs, fringe, tip, shaft or base, including pale, white or translucent parts) extends beyond the green line on that side; otherwise answer \"complete\". A part hidden under something else on the slide (card, board, tape, another feather) does not count as cut.\n2. Holes and gaps: answer true if any part of this feather inside its outline is missing from the RIGHT panel (a hole, gap, notch or band that is black on the RIGHT but feather on the LEFT), or if the segmentation is split into separate pieces. Natural separations between barbs that look the same on both panels are not holes.\n3. One feather: single_feather is true only if the outline holds exactly one feather; fragment is true if it holds only a piece of a feather while the rest of that feather is visible outside it.\n4. Nothing else: other_feather_inside is true if any part of a different feather is inside the outline, however small. other_material_inside is true if anything that is not feather (slide background, card, board, tape, label, glue, shadow) is inside the outline beyond a thin rim. A thin rim is a band of background that follows the outline and is only a few pixels wide (no wider than about twice the green line). A wider band, or a patch of background anywhere that does not follow the outline, counts as other material.\n\nAnswer with JSON only, no other text:\n{\"outline\": {\"left\": \"complete\"|\"cut\", \"right\": \"complete\"|\"cut\", \"top\": \"complete\"|\"cut\", \"bottom\": \"complete\"|\"cut\"}, \"holes_or_gaps\": true|false, \"single_feather\": true|false, \"fragment\": true|false, \"other_feather_inside\": true|false, \"other_material_inside\": true|false, \"model_score\": <1-10: 10 = usable as is for measuring this feather, 1 = unusable>, \"notes\": \"<at most 20 words: which check failed and where, or ok>\"}",
     "min_hole_frac": 0.002,
     "fail_hole_frac": 0.02,
     "second_look": {
@@ -73,7 +98,10 @@
         "fragment": 4,
         "not_single_feather": 4,
         "other_feather_inside": 3,
-        "other_material_inside": 2
+        "other_material_inside": 2,
+        "glue_inside": 2,
+        "hidden_part": 3,
+        "hidden_most": 8
       }
     },
     "repair": {
@@ -90,7 +118,22 @@
       "min_area_ratio": 0.8,
       "max_area_ratio": 1.8,
       "max_per_slide": 6
-    }
+    },
+    "hidden": {
+      "_comment": "Measured, not asked: a feather partly under the board, a card or another feather has a ruler-straight stretch of outline (feather_judge.straight_outline: share of its length, at `eps` px). From part_frac it is 'part' hidden; when also smaller than most_max_rel_area of the slide's median feather, 'most'. Deducts score.hidden_part / hidden_most and fails the check.",
+      "enabled": true,
+      "eps": 2.0,
+      "min_frac": 0.15,
+      "part_frac": 0.45,
+      "most_frac": 0.45,
+      "most_max_rel_area": 0.6,
+      "min_longest": 0.2
+    },
+    "needs_support": [
+      "holes_or_gaps",
+      "fragment"
+    ],
+    "_needs_support_comment": "Model answers that only count as failures when a measurement backs them (feather_judge.demote_unsupported): holes_or_gaps (a measured hole of fail_hole_frac or a split mask), fragment (the clean-up marked the piece small or narrow). Otherwise listed in review_uncertain. From 50 hand verdicts: model-only holes flagged 4 good feathers and 0 bad."
   },
   "inventory": {
     "enabled": true,

@@ -67,6 +67,45 @@ def mask_metrics(mask: np.ndarray, min_hole_frac: float = 0.002, min_part_frac: 
     return {"hole_frac": round(float(sum(big)) / (area + sum(big)), 4), "holes": len(big), "mask_parts": parts}
 
 
+def straight_outline(mask: np.ndarray, eps: float = 2.0, min_frac: float = 0.15) -> tuple[float, float]:
+    """Share of the feather's length where its mask outline is ruler-straight: the edge of the
+    board, a card or another feather lying across it (feather outlines are curved and ragged).
+    Measured at half resolution; the saved crop's horizontal bottom trim line is ignored.
+    Returns (total, longest single run), both as shares of the feather's length."""
+    m = cv2.resize(mask.astype(np.uint8), None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not cnts:
+        return 0.0, 0.0
+    c = max(cnts, key=cv2.contourArea)
+    ys, xs = c[:, 0, 1], c[:, 0, 0]
+    length = max(int(ys.max() - ys.min()), int(xs.max() - xs.min()), 1)
+    poly = cv2.approxPolyDP(c, eps, True)[:, 0]
+    total = longest = 0.0
+    for a, b in zip(poly, np.roll(poly, -1, axis=0)):
+        n = float(np.hypot(*(b - a)))
+        if n < min_frac * length:
+            continue
+        if abs(int(a[1]) - int(b[1])) <= 1 and min(a[1], b[1]) >= ys.max() - 2:
+            continue
+        total += n
+        longest = max(longest, n)
+    return round(total / length, 3), round(longest / length, 3)
+
+
+def hidden_level(straight: float, longest: float, rel_area: float | None, cfg: dict) -> str:
+    """'none' | 'part' | 'most' from the straight outline (total and longest single run, shares of
+    the feather's length) and the feather's area relative to the slide's median feather (a mostly
+    covered feather shows only a small piece). A board edge gives one long run; the nearly straight
+    outer vane of a flight feather gives several shorter ones."""
+    h = cfg.get("hidden") or {}
+    if straight < float(h.get("part_frac", 0.45)) or longest < float(h.get("min_longest", 0.2)):
+        return "none"
+    if rel_area is not None and rel_area < float(h.get("most_max_rel_area", 0.6)) \
+            and straight >= float(h.get("most_frac", 0.45)):
+        return "most"
+    return "part"
+
+
 # ---------------------------------------------------------------- what the model sees
 
 def context_panel(slide_bgr: np.ndarray, mask: np.ndarray, cfg: dict) -> Image.Image:
@@ -175,7 +214,8 @@ _PASS = {"holes_or_gaps": False, "single_feather": True, "fragment": False, "oth
 def _model_failures(res: dict) -> set[str]:
     """The checks the model's answer fails (not the mask measurements)."""
     out = {f"outline_{s}" for s in SIDES if res.get(f"outline_{s}") == "cut"}
-    return out | {k for k, ok in _PASS.items() if res.get(k) is not None and res.get(k) != ok}
+    measured = {"hidden"} if "straight_outline" in res else set()   # not the model's answer
+    return out | {k for k, ok in _PASS.items() if k not in measured and res.get(k) is not None and res.get(k) != ok}
 
 
 def _second_look(client, panel, cfg: dict, res: dict) -> None:
@@ -206,16 +246,24 @@ def _second_look(client, panel, cfg: dict, res: dict) -> None:
     res["uncertain_checks"] = uncertain
 
 
-def judge(client, slide_bgr, mask, crop_bgr, cfg: dict) -> tuple[dict, Image.Image]:
-    """Measures and asks about one feather. Returns (result, the panel image)."""
+def judge(client, slide_bgr, mask, crop_bgr, cfg: dict, rel_area: float | None = None,
+          raw_mask: np.ndarray | None = None) -> tuple[dict, Image.Image]:
+    """Measures and asks about one feather. Returns (result, the panel image). For the measured
+    'hidden' check: `raw_mask`, the segmentation before glue/card clean-up (whose cuts add straight
+    edges), and `rel_area`, its area relative to the slide's median feather."""
     metrics = mask_metrics(mask, cfg.get("min_hole_frac", 0.002))
+    if (cfg.get("hidden") or {}).get("enabled"):
+        h = cfg["hidden"]
+        metrics["straight_outline"], metrics["straight_longest"] = straight_outline(
+            raw_mask if raw_mask is not None else mask, float(h.get("eps", 2.0)), float(h.get("min_frac", 0.15)))
+        metrics["hidden"] = hidden_level(metrics["straight_outline"], metrics["straight_longest"], rel_area, cfg)
     panel = context_panel(slide_bgr, mask, cfg)
     try:
         raw = client.ask(panel, cfg["prompt"], max_tokens=cfg.get("max_tokens", 220))
     except Exception as exc:  # noqa: BLE001
         return {"status": "model_error", "error": f"{type(exc).__name__}: {exc}", **metrics}, panel
     res = parse(raw, cfg.get("score"))
-    res.update(metrics)
+    res.update(metrics)       # measured 'hidden' replaces the model's answer when enabled
     if res["status"] == "ok" and (cfg.get("second_look") or {}).get("enabled", False):
         _second_look(client, panel, cfg, res)
         _finish(res, cfg.get("score"))
@@ -225,9 +273,34 @@ def judge(client, slide_bgr, mask, crop_bgr, cfg: dict) -> tuple[dict, Image.Ima
         # failures even if the model missed them; smaller measured holes are mostly natural
         # vane splits (background showing through) and are only recorded
         res["holes_or_gaps"] = True
+    if res["status"] == "ok":
         _finish(res, cfg.get("score"))
     res["raw"] = (raw or "")[:400]
     return res, panel
+
+
+def demote_unsupported(rec: dict, cfg: dict, prefix: str = "judge_") -> None:
+    """Model answers that hand verdicts showed to be noise unless something measured backs them
+    (feather_judge.needs_support): 'holes or gaps' without a measured hole (fail_hole_frac) or a
+    split mask, and 'fragment' on a piece the clean-up did not mark small or narrow. They move
+    to the uncertain checks (listed, not failing) and the score is recomputed."""
+    if rec.get(prefix + "status") != "ok":
+        return
+    need = cfg.get("needs_support", [])
+    moved = []
+    if "holes_or_gaps" in need and rec.get(prefix + "holes_or_gaps") \
+            and (rec.get(prefix + "hole_frac") or 0) < float(cfg.get("fail_hole_frac", 0.02)) \
+            and (rec.get(prefix + "mask_parts") or 1) <= 1:
+        rec[prefix + "holes_or_gaps"] = False
+        moved.append("holes_or_gaps")
+    if "fragment" in need and rec.get(prefix + "fragment") and "possible fragment" not in str(rec.get("postprocess") or ""):
+        rec[prefix + "fragment"] = False
+        moved.append("fragment")
+    if moved:
+        rec[prefix + "uncertain_checks"] = sorted(set(rec.get(prefix + "uncertain_checks") or []) | set(moved))
+        bare = {k[len(prefix):]: v for k, v in rec.items() if k.startswith(prefix)}
+        rec[prefix + "score"] = derive_score(bare, cfg.get("score"))
+        rec[prefix + "segment_ok"] = not failed_checks(bare, prefix="")
 
 
 def failed_checks(rec: dict, prefix: str = "judge_") -> list[str]:
