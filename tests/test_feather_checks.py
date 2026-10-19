@@ -66,6 +66,21 @@ def test_measured_hole_overrides_a_clean_model_answer():
     assert fj.needs_review({f"judge_{k}": v for k, v in res.items()}) == "holes or gaps"
 
 
+def test_small_measured_hole_is_recorded_but_not_a_failure():
+    """A pocket under fail_hole_frac (natural vane split) is measured, not flagged."""
+    slide = np.full((200, 100, 3), 200, np.uint8)
+    m = np.zeros((200, 100), bool)
+    m[20:180, 30:70] = True                  # 6400 px
+    m[100:104, 48:52] = False                # 16 px = 0.25 % of the feather
+    res, _ = fj.judge(_Client(_answer()), slide, m, None, {"prompt": "x", "panel_height": 200})
+    assert res["holes"] == 1 and 0 < res["hole_frac"] < 0.02
+    assert res["holes_or_gaps"] is False and res["score"] == 10
+    assert fj.needs_review({f"judge_{k}": v for k, v in res.items()}) == ""
+    # the model's own "holes" answer still counts
+    res2, _ = fj.judge(_Client(_answer(holes_or_gaps=True)), slide, m, None, {"prompt": "x", "panel_height": 200})
+    assert res2["holes_or_gaps"] is True
+
+
 def test_inventory_merge_places_missed_feathers_in_sequence():
     inv = fi.parse(json.dumps({"total_feathers": 4, "missed": [{"between": [2, 3], "x_center": 0.6,
                                                                 "partly_hidden": True}]}), 3)

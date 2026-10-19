@@ -148,8 +148,11 @@ def judge(client, slide_bgr, mask, crop_bgr, cfg: dict) -> tuple[dict, Image.Ima
         return {"status": "model_error", "error": f"{type(exc).__name__}: {exc}", **metrics}, panel
     res = parse(raw, cfg.get("score"))
     res.update(metrics)
-    if res["status"] == "ok" and (metrics["holes"] or metrics["mask_parts"] > 1):
-        # measured holes / split mask count as rule-2 failures even if the model missed them
+    fail_frac = float(cfg.get("fail_hole_frac", 0.02))
+    if res["status"] == "ok" and ((metrics["hole_frac"] or 0) >= fail_frac or metrics["mask_parts"] > 1):
+        # a mask in pieces, or measured holes of fail_hole_frac or more, count as rule-2
+        # failures even if the model missed them; smaller measured holes are mostly natural
+        # vane splits (background showing through) and are only recorded
         res["holes_or_gaps"] = True
         _finish(res, cfg.get("score"))
     res["raw"] = (raw or "")[:400]
@@ -164,7 +167,7 @@ def failed_checks(rec: dict, prefix: str = "judge_") -> list[str]:
     sides = g("sides_cut")
     if sides:
         why.append("outline cut: " + ",".join(sides if isinstance(sides, list) else [str(sides)]))
-    if g("holes_or_gaps") or (g("holes") or 0) > 0 or (g("mask_parts") or 0) > 1:
+    if g("holes_or_gaps") or (g("mask_parts") or 0) > 1:
         why.append("holes or gaps")
     if g("fragment"):
         why.append("fragment")
