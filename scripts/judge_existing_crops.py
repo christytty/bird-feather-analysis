@@ -1,5 +1,6 @@
 """Score already-segmented crops (e.g. a sample_run folder from workers on older
-code) with the per-feather judge, to calibrate the rubric without redeploying.
+code) with the per-feather judge, to calibrate the rubric without redeploying, or
+to compare an earlier run's crops with a new run (notebooks/before_after.ipynb).
 
 The crop's position on its slide is recovered by masked template matching
 (the crop is the slide's pixels inside the mask, histogram-equalized), and its
@@ -53,6 +54,8 @@ def main() -> int:
             panel.save(qc, quality=85)
             row = {"file_id": n, "seq": lx.seq_letter(i), "crop": cp.name, "match": round(match, 3),
                    "qc_image": str(qc), **{"judge_" + k: v for k, v in res.items() if k != "raw"}}
+            row["needs_review"] = feather_judge.needs_review(row)
+            row["review_uncertain"] = feather_judge.uncertain_review(row)
             rows.append(row)
             print(n, row["seq"], row.get("judge_score"), row.get("judge_status"), row.get("judge_notes", ""),
                   row.get("judge_error", ""), flush=True)
