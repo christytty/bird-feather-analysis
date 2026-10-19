@@ -14,6 +14,47 @@ flowchart TB
     H --> I[Live Monitoring and Review]
 ```
 
+### Node architecture
+Example with 4 nodes: one head node and three worker nodes. Add workers by listing them in
+`FEATHER_CLUSTER_HOSTS`.
+
+```mermaid
+flowchart TB
+    GH[("GitHub<br/>bird-feather-analysis<br/>main")]
+    DRIVE[("Google Drive<br/>Feather_Molt_Project/runs")]
+    subgraph CTRL["Control machine (laptop or workspace)"]
+        NB["Notebooks<br/>run_control / label_lab / prompt_lab"]
+    end
+    subgraph HEAD["Head node"]
+        REDIS[("Redis<br/>broker + results")]
+        VLM["VLM server :8790<br/>Qwen3.8-27B"]
+        FLOWER["Flower :5555"]
+        W0["Worker<br/>SAM 3 + Qwen3.8"]
+        RAW[("data/raw<br/>slide images")]
+    end
+    subgraph WORKERS["Worker nodes (3 in this example; add more)"]
+        direction LR
+        W1["Worker node 1<br/>SAM 3 + Qwen3.8"]
+        W2["Worker node 2<br/>SAM 3 + Qwen3.8"]
+        W3["Worker node 3<br/>SAM 3 + Qwen3.8"]
+        WN["..."]
+    end
+    NB -->|jobs| REDIS
+    REDIS -->|tasks| W0
+    REDIS -->|tasks| WORKERS
+    RAW -.->|copied to every worker| WORKERS
+    NB -->|label / prompt lab requests| VLM
+    GH -->|git fetch main| HEAD
+    GH -->|git fetch main| WORKERS
+    WORKERS -->|outputs copied back over SSH| NB
+    NB -->|rclone: run results| DRIVE
+    HEAD -->|sync-runs: archive| DRIVE
+```
+
+Nodes run the code on `main`: after a merge, update them with `./run_cluster.sh` or the
+Workers section of `notebooks/run_control.ipynb`. Each worker loads its own SAM 3 and Qwen3.8 and
+writes its outputs to its own disk; the control machine collects them and uploads the results.
+
 ## Project Structure
 - `data/raw/`: Input feather `.jpg` files.
 - `data/processed/`: Output segmented feather crops.
