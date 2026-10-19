@@ -298,6 +298,8 @@ class FeatherProcessor:
         from src import sam3_extras
 
         ex, ref = seg.get("exemplar") or {}, seg.get("refine") or {}
+        if getattr(self, "sam3", None) is None:      # no SAM 3 model loaded (e.g. a stand-in in tests)
+            return out
         if ex.get("enabled"):
             out = sam3_extras.exemplar_pass(self.sam3, image_path, img_pil.size, prompts[0].rstrip("."), out, ex,
                                             nms_iou, max_box_area_ratio, seg.get("conf"))

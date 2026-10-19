@@ -73,3 +73,24 @@ def test_refine_pass_replaces_overlapping_masks_and_keeps_strays(tmp_path):
         return m
     (_, masks2, _, _), info2 = sx.refine_pass(FakeInteractive(elsewhere), path, first, {})
     assert info2 == {"refined": 0, "kept_first": 2, "slide": "s.jpg"} and np.array_equal(masks2[0] > 0, a > 0)
+
+
+def test_processor_runs_example_boxes_when_enabled(monkeypatch):
+    from PIL import Image
+
+    from src.feather_processing import FeatherProcessor
+
+    p = object.__new__(FeatherProcessor)
+    p.sam3 = object()
+    seen = {}
+
+    def fake_exemplar(sam3, image_path, size, text, first, cfg, nms_iou, max_ratio, conf=None):
+        seen.update(text=text, cfg=cfg)
+        return ([[1, 1, 2, 2]], [np.ones((2, 2))], "", [0.9])
+    monkeypatch.setattr(sx, "exemplar_pass", fake_exemplar)
+    first = ([[0, 0, 1, 1]], [np.ones((2, 2))], "", [0.8])
+    seg = {"exemplar": {"enabled": True}, "refine": {"enabled": False}, "conf": 0.25}
+    out = p._sam3_extras("s.jpg", Image.new("RGB", (10, 10)), first, seg, ["bird feather"], 0.3, 0.45)
+    assert out[0] == [[1, 1, 2, 2]] and seen["text"] == "bird feather"
+    off = {"exemplar": {"enabled": False}, "refine": {"enabled": False}}
+    assert p._sam3_extras("s.jpg", Image.new("RGB", (10, 10)), first, off, ["bird feather"], 0.3, 0.45) is first

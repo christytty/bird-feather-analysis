@@ -12,7 +12,7 @@
     "nms_iou": 0.3,
     "max_box_area_ratio": 0.45,
     "exemplar": {
-      "enabled": false,
+      "enabled": true,
       "negatives": true,
       "min_aspect": 2.0
     },
