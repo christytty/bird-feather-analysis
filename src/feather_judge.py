@@ -143,7 +143,7 @@ def judge(client, slide_bgr, mask, crop_bgr, cfg: dict) -> tuple[dict, Image.Ima
     metrics = mask_metrics(mask, cfg.get("min_hole_frac", 0.002))
     panel = context_panel(slide_bgr, mask, cfg)
     try:
-        raw = client.ask(panel, cfg["prompt"])
+        raw = client.ask(panel, cfg["prompt"], max_tokens=cfg.get("max_tokens", 220))
     except Exception as exc:  # noqa: BLE001
         return {"status": "model_error", "error": f"{type(exc).__name__}: {exc}", **metrics}, panel
     res = parse(raw, cfg.get("score"))

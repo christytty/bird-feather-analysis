@@ -48,7 +48,10 @@ def run(n: int = 5, seed: int = 0, match: list[str] | None = None, timeout: int 
     print(f"{run_id}: {len(chosen)} slides -> workers")
 
     task_args = (lambda p: [p, remote_out, options]) if options else (lambda p: [p, remote_out])
-    pending = {app.send_task("src.celery_tasks.process_image", args=task_args(p)): p for p in chosen}
+    from src.notebook_remote_runtime import task_queue
+
+    pending = {app.send_task("src.celery_tasks.process_image", args=task_args(p), queue=task_queue()): p
+               for p in chosen}
     deadline = time.time() + timeout
     done: dict[str, dict] = {}
     while pending and time.time() < deadline:

@@ -215,13 +215,19 @@ def save_prompt(kind: str, prompt: str) -> None:
 
 
 def workers_have_options_support(timeout: float = 5) -> tuple[bool, dict]:
-    """True when the cluster workers run this branch's code (the label task is registered)."""
-    from src.notebook_remote_runtime import create_celery_client, load_notebook_config_from_env
+    """True when every worker that takes jobs from this client's queue
+    (FEATHER_TASK_QUEUE, default 'celery') runs the new code (the label task
+    is registered). Workers on other queues are ignored."""
+    from src.notebook_remote_runtime import create_celery_client, load_notebook_config_from_env, task_queue
 
     app = create_celery_client(load_notebook_config_from_env())
-    reg = app.control.inspect(timeout=timeout).registered() or {}
-    ok = bool(reg) and all("src.celery_tasks.extract_labels" in tasks for tasks in reg.values())
-    return ok, {w: sorted(t) for w, t in reg.items()}
+    insp = app.control.inspect(timeout=timeout)
+    reg = insp.registered() or {}
+    queues = insp.active_queues() or {}
+    want = task_queue() or "celery"
+    mine = {w: sorted(t) for w, t in reg.items() if any(q.get("name") == want for q in queues.get(w, []))}
+    ok = bool(mine) and all("src.celery_tasks.extract_labels" in t for t in mine.values())
+    return ok, mine
 
 
 def run_seg_experiment(slides: list[str], options: dict | None, tag: str, timeout: int = 5400) -> Path:
