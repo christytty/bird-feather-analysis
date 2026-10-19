@@ -118,3 +118,70 @@ def refine_pass(inter, image_path: str, first, cfg: dict) -> tuple[tuple, dict]:
         else:
             out.append(new.astype(np.float32)); changed += 1
     return (boxes, out, reason, scores), {"refined": changed, "kept_first": kept, "slide": Path(image_path).name}
+
+
+def _short_side(mask: np.ndarray) -> float:
+    cnts, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return 0.0
+    (_, _), (w, h), _ = cv2.minAreaRect(max(cnts, key=cv2.contourArea))
+    return float(min(w, h))
+
+
+def split_merged(sam3, image_path: str, text: str, first, cfg: dict) -> tuple[tuple, dict]:
+    """Repairs masks that look like several feathers merged into one: a mask at
+    least `width_ratio` times the slide's typical feather width, or `area_ratio`
+    times its typical area, is segmented again on a crop around it (text prompt
+    only). If that finds `min_parts` or more feather-sized pieces lying mostly
+    inside the mask and covering most of it, they replace it; otherwise the mask
+    is kept. Returns (segmentation, {'tried': n, 'split': n})."""
+    boxes, masks, reason, scores = first
+    info = {"tried": 0, "split": 0, "slide": Path(image_path).name}
+    if reason or len(masks) < 2:
+        return first, info
+    img = cv2.imread(image_path)
+    H, W = img.shape[:2]
+    full = [cv2.resize(m.astype(np.float32), (W, H)) > 0.5 for m in masks]
+    areas = np.array([m.sum() for m in full], dtype=float)
+    widths = np.array([_short_side(m) for m in full], dtype=float)
+    med_a, med_w = float(np.median(areas)), float(np.median(widths))
+    a_ratio, w_ratio = float(cfg.get("area_ratio", 1.8)), float(cfg.get("width_ratio", 1.6))
+    min_piece, min_parts = float(cfg.get("min_piece_frac", 0.35)), int(cfg.get("min_parts", 2))
+    min_cover, inside = float(cfg.get("min_cover", 0.6)), float(cfg.get("min_inside", 0.6))
+    out_b, out_m, out_s = [], [], []
+    for b, m, s, a, w in zip(boxes, full, scores, areas, widths):
+        if not (a >= a_ratio * med_a or (med_w and w >= w_ratio * med_w)):
+            out_b.append(b); out_m.append(m.astype(np.float32)); out_s.append(s); continue
+        info["tried"] += 1
+        ys, xs = np.nonzero(m)
+        pad = 20
+        cx0, cy0 = max(0, xs.min() - pad), max(0, ys.min() - pad)
+        cx1, cy1 = min(W, xs.max() + pad), min(H, ys.max() + pad)
+        sam3.set_image(np.ascontiguousarray(img[cy0:cy1, cx0:cx1]))
+        pieces = []
+        for r in sam3(text=[text]):
+            if r.masks is None or r.boxes is None:
+                continue
+            for pm, ps in zip(r.masks.data.cpu().numpy(), r.boxes.conf.cpu().numpy()):
+                full_p = np.zeros_like(m)
+                full_p[cy0:cy1, cx0:cx1] = pm[: cy1 - cy0, : cx1 - cx0] > 0.5
+                pa = full_p.sum()
+                if pa >= min_piece * med_a and np.logical_and(full_p, m).sum() / max(pa, 1) >= inside:
+                    pieces.append((float(ps), full_p))
+        # one piece per feather: drop pieces that mostly repeat a better-scoring one
+        kept: list[tuple[float, np.ndarray]] = []
+        for ps, pm in sorted(pieces, key=lambda t: -t[0]):
+            if all(np.logical_and(pm, q).sum() / max(min(pm.sum(), q.sum()), 1) < 0.5 for _, q in kept):
+                kept.append((ps, pm))
+        union = np.zeros_like(m)
+        for _, pm in kept:
+            union |= pm
+        if len(kept) >= min_parts and np.logical_and(union, m).sum() / max(m.sum(), 1) >= min_cover:
+            info["split"] += 1
+            for ps, pm in kept:
+                yy, xx = np.nonzero(pm)
+                out_b.append([float(xx.min()), float(yy.min()), float(xx.max()), float(yy.max())])
+                out_m.append(pm.astype(np.float32)); out_s.append(ps)
+        else:
+            out_b.append(b); out_m.append(m.astype(np.float32)); out_s.append(s)
+    return (out_b, out_m, reason, out_s), info

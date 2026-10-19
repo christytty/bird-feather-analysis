@@ -94,3 +94,43 @@ def test_processor_runs_example_boxes_when_enabled(monkeypatch):
     assert out[0] == [[1, 1, 2, 2]] and seen["text"] == "bird feather"
     off = {"exemplar": {"enabled": False}, "refine": {"enabled": False}}
     assert p._sam3_extras("s.jpg", Image.new("RGB", (10, 10)), first, off, ["bird feather"], 0.3, 0.45) is first
+
+
+class CropSemantic:
+    """Stand-in for the semantic predictor on a crop: returns `make(shape)` -> list of (mask, score)."""
+    def __init__(self, make):
+        self.make, self.calls = make, 0
+
+    def set_image(self, crop):
+        self.shape = crop.shape[:2]
+
+    def __call__(self, text):
+        self.calls += 1
+        pieces = self.make(self.shape)
+        return _res([[0, 0, 1, 1]] * len(pieces), [s for _, s in pieces], [m for m, _ in pieces])
+
+
+def test_split_merged_replaces_a_wide_mask_with_its_feathers(tmp_path):
+    img = np.full((300, 400, 3), 200, np.uint8)
+    path = str(tmp_path / "s.jpg"); cv2.imwrite(path, img)
+    def mask(x0, x1):
+        m = np.zeros((300, 400), np.float32); m[40:260, x0:x1] = 1; return m
+    normal = [mask(20, 50), mask(70, 100), mask(120, 150)]
+    merged = mask(200, 290)                        # three feathers wide
+    first = ([[0, 0, 1, 1]] * 4, normal + [merged], "", [0.9] * 4)
+
+    def two_feathers(shape):                       # crop = merged mask + 20 px margin
+        h, w = shape
+        a = np.zeros(shape, bool); a[20:h - 20, 20:50] = True
+        b = np.zeros(shape, bool); b[20:h - 20, 60:110] = True
+        return [(a, 0.9), (b, 0.8)]
+    (boxes, masks, _, scores), info = sx.split_merged(CropSemantic(two_feathers), path, "bird feather", first, {})
+    assert info["tried"] == 1 and info["split"] == 1 and len(masks) == 5
+    assert all(np.array_equal(masks[i] > 0, normal[i] > 0) for i in range(3))   # normal masks untouched
+
+    def one_feather(shape):
+        h, w = shape
+        a = np.zeros(shape, bool); a[20:h - 20, 20:w - 20] = True
+        return [(a, 0.9)]
+    (_, masks2, _, _), info2 = sx.split_merged(CropSemantic(one_feather), path, "bird feather", first, {})
+    assert info2 == {"tried": 1, "split": 0, "slide": "s.jpg"} and len(masks2) == 4
