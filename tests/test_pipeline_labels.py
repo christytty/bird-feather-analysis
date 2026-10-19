@@ -248,7 +248,8 @@ def test_process_image_merges_a_sliver_into_its_feather(tmp_path):
     p._segment_sam3 = lambda *a, **k: ([[40, 30, 80, 270], [200, 30, 240, 270], [194, 60, 200, 220]],
                                        full, "", [0.9, 0.9, 0.4])
     res = p.process_image(str(slide), str(tmp_path / "out"))
-    assert res.feathers_saved == 2 and client.judge_calls == 2
+    # each feather fails a check on the first look, so each gets a second look (confirmed)
+    assert res.feathers_saved == 2 and client.judge_calls == 4
     b = res.feather_ids[1]
     assert b["sam_masks"] == 2 and "fragment touching" in b["postprocess"]
     assert b["judge_score"] == 8 and b["needs_review"] == "outline cut: left"   # surfaced per feather

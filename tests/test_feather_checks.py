@@ -108,3 +108,50 @@ def test_inventory_contradictions_are_flagged_not_trusted():
     # failed request: letters stay as segmented
     items, status, _ = fi.merge([100.0, 300.0], {"status": "model_error", "error": "timeout"}, 1000)
     assert status == "model_error" and [it["kind"] for it in items] == ["segmented", "segmented"]
+
+
+class _SeqClient:
+    """Answers in order; an Exception item is raised."""
+    def __init__(self, *answers):
+        self.answers, self.calls = list(answers), 0
+
+    def ask(self, image, prompt, max_tokens=None):
+        self.calls += 1
+        a = self.answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+
+def _mask():
+    m = np.zeros((200, 100), bool)
+    m[20:180, 30:70] = True
+    return m
+
+
+CFG2 = {"prompt": "x", "panel_height": 200, "second_look": {"enabled": True, "scale": 0.8}}
+
+
+def test_second_look_confirms_or_moves_failures_to_uncertain():
+    slide = np.full((200, 100, 3), 200, np.uint8)
+    c = _SeqClient(_answer(bottom="cut", other_material_inside=True), _answer(bottom="cut"))
+    res, _ = fj.judge(c, slide, _mask(), None, CFG2)
+    rec = {f"judge_{k}": v for k, v in res.items()}
+    assert c.calls == 2 and res["sides_cut"] == ["bottom"] and res["other_material_inside"] is False
+    assert res["uncertain_checks"] == ["other_material_inside"] and res["score"] == 8
+    assert fj.needs_review(rec) == "outline cut: bottom"
+    assert fj.uncertain_review(rec) == "non-feather material inside"
+
+
+def test_second_look_only_when_something_failed_and_never_clears_on_an_error():
+    slide = np.full((200, 100, 3), 200, np.uint8)
+    c = _SeqClient(_answer())
+    res, _ = fj.judge(c, slide, _mask(), None, CFG2)
+    assert c.calls == 1 and res["uncertain_checks"] == [] and res["score"] == 10
+    c = _SeqClient(_answer(left="cut"), TimeoutError("server"))
+    res, _ = fj.judge(c, slide, _mask(), None, CFG2)
+    assert res["sides_cut"] == ["left"] and res["uncertain_checks"] == [] and "failed" in res["second_look"]
+    # switched off: one look, as before
+    c = _SeqClient(_answer(left="cut"))
+    res, _ = fj.judge(c, slide, _mask(), None, {"prompt": "x", "panel_height": 200})
+    assert c.calls == 1 and res["sides_cut"] == ["left"]

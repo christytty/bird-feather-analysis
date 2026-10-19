@@ -795,6 +795,7 @@ FEATHER_TABLE_COLS = [
     "judge_outline_right", "judge_outline_top", "judge_outline_bottom", "judge_holes_or_gaps", "judge_holes",
     "judge_hole_frac", "judge_mask_parts", "judge_single_feather", "judge_fragment", "judge_other_feather_inside",
     "judge_other_material_inside", "judge_model_score", "judge_notes", "judge_error",
+    "review_uncertain", "judge_uncertain_checks",
     # missed feathers (src/feather_inventory.py): slide-level result repeated per row
     "missed_x", "missed_between", "missed_partly_hidden", "inventory_status", "inventory_total",
     "feathers_segmented", "feathers_possibly_missed", "inventory_note", "inventory_image",
@@ -1211,12 +1212,16 @@ def slide_problems(r: LabelResult, gold_row: dict | None, cfg: dict) -> list[dic
         elif f.get("needs_review"):
             out.append({"field": f"feather {f.get('seq')}", "kind": "feather_check", "got": None, "want": None,
                         "status": f.get("judge_status"), "note": f.get("needs_review")})
+        if f.get("review_uncertain"):
+            out.append({"field": f"feather {f.get('seq')}", "kind": "feather_uncertain", "got": None, "want": None,
+                        "status": f.get("judge_status"), "note": "one look only: " + f["review_uncertain"]})
     want_n = (gold_row or {}).get("feather_count", "").strip()
     if want_n and r.feathers and str(len(segmented(r.feathers))) != want_n:
         out.append({"field": "feathers", "kind": "count", "got": len(segmented(r.feathers)), "want": int(want_n),
                     "status": "segmentation"})
     rank = {"wrong": 0, "missed": 1, "model_error": 2, "count": 3, "flagged_wrong": 4, "conflict": 5,
-            "needs_review": 6, "possible_missed": 7, "feather_check": 8, "filename_fallback": 9, "partial": 10}
+            "needs_review": 6, "possible_missed": 7, "feather_check": 8, "filename_fallback": 9, "partial": 10,
+            "feather_uncertain": 11}
     return sorted(out, key=lambda p: rank.get(p["kind"], 9))
 
 

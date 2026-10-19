@@ -138,6 +138,44 @@ def _finish(res: dict, score_cfg: dict | None) -> None:
     res["segment_ok"] = not failed_checks(res, prefix="")
 
 
+_PASS = {"holes_or_gaps": False, "single_feather": True, "fragment": False, "other_feather_inside": False,
+         "other_material_inside": False}
+
+
+def _model_failures(res: dict) -> set[str]:
+    """The checks the model's answer fails (not the mask measurements)."""
+    out = {f"outline_{s}" for s in SIDES if res.get(f"outline_{s}") == "cut"}
+    return out | {k for k, ok in _PASS.items() if res.get(k) is not None and res.get(k) != ok}
+
+
+def _second_look(client, panel, cfg: dict, res: dict) -> None:
+    """Asks again on the same panel at a smaller size when the first answer
+    fails a check. A check failed only once is set back to passing and listed
+    in `uncertain_checks` (kept for review, not counted as a failure); a check
+    failed both times stays failed. If the second request fails, the first
+    answer stands: nothing is cleared without a second answer."""
+    first = _model_failures(res)
+    res["uncertain_checks"] = []
+    if not first:
+        return
+    scale = float((cfg.get("second_look") or {}).get("scale", 0.8))
+    small = panel.resize((max(1, int(panel.width * scale)), max(1, int(panel.height * scale))), Image.LANCZOS)
+    try:
+        raw2 = client.ask(small, cfg["prompt"], max_tokens=cfg.get("max_tokens", 220))
+    except Exception as exc:  # noqa: BLE001
+        res["second_look"] = f"failed: {type(exc).__name__}"
+        return
+    res2 = parse(raw2, cfg.get("score"))
+    res["second_look"] = (raw2 or "")[:300]
+    if res2.get("status") != "ok":
+        return
+    uncertain = sorted(first - _model_failures(res2))
+    for c in uncertain:
+        res[c] = "complete" if c.startswith("outline_") else _PASS[c]
+    res["sides_cut"] = [s for s in SIDES if res.get(f"outline_{s}") == "cut"]
+    res["uncertain_checks"] = uncertain
+
+
 def judge(client, slide_bgr, mask, crop_bgr, cfg: dict) -> tuple[dict, Image.Image]:
     """Measures and asks about one feather. Returns (result, the panel image)."""
     metrics = mask_metrics(mask, cfg.get("min_hole_frac", 0.002))
@@ -148,6 +186,9 @@ def judge(client, slide_bgr, mask, crop_bgr, cfg: dict) -> tuple[dict, Image.Ima
         return {"status": "model_error", "error": f"{type(exc).__name__}: {exc}", **metrics}, panel
     res = parse(raw, cfg.get("score"))
     res.update(metrics)
+    if res["status"] == "ok" and (cfg.get("second_look") or {}).get("enabled", False):
+        _second_look(client, panel, cfg, res)
+        _finish(res, cfg.get("score"))
     fail_frac = float(cfg.get("fail_hole_frac", 0.02))
     if res["status"] == "ok" and ((metrics["hole_frac"] or 0) >= fail_frac or metrics["mask_parts"] > 1):
         # a mask in pieces, or measured holes of fail_hole_frac or more, count as rule-2
@@ -190,6 +231,16 @@ def needs_review(rec: dict) -> str:
     if "possible fragment" in str(rec.get("postprocess") or ""):
         why.append("small/narrow mask")
     return "; ".join(why)
+
+
+def uncertain_review(rec: dict, prefix: str = "judge_") -> str:
+    """Checks failed on one look only (second_look): listed for review after
+    the confirmed failures, not counted in the score or the retry."""
+    names = {"outline_left": "outline cut: left", "outline_right": "outline cut: right",
+             "outline_top": "outline cut: top", "outline_bottom": "outline cut: bottom",
+             "holes_or_gaps": "holes or gaps", "single_feather": "not a single feather", "fragment": "fragment",
+             "other_feather_inside": "other feather inside", "other_material_inside": "non-feather material inside"}
+    return "; ".join(names.get(c, c) for c in rec.get(prefix + "uncertain_checks") or [])
 
 
 def slide_checks(records: list[dict]) -> dict:

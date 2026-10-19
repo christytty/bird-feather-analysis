@@ -549,6 +549,7 @@ class FeatherProcessor:
                 else:
                     rec["judge_status"] = "disabled"
                 rec["needs_review"] = feather_judge.needs_review(rec)
+                rec["review_uncertain"] = feather_judge.uncertain_review(rec)
                 records.append(rec)
             feather_ids = records
             if labels is not None:
