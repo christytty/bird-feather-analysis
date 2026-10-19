@@ -74,6 +74,33 @@ happened on masks whose area changed by less than 1%. Three flags cleared and on
 So the per-feather checks are not repeatable to within a few feathers. Compare variants on mask changes and
 feather counts, not only on flag counts.
 
+### 100-slide rerun with example boxes (`slice100-sam3ex-20261019`)
+
+Same 100 slides as `slice100-20261019`, now with example boxes.
+
+| | Before | With example boxes |
+|---|---|---|
+| Feather count right (30 hand-checked slides) | 29/30 | 30/30 |
+| Feathers | 339 | 338 |
+| Feathers flagged (any reason) | 53 | 62 |
+| Feathers flagged beyond holes | 28 | 32 |
+| Duplicates marked | 4 | 3 |
+| Label fields right (vs hand-checked) | 137/138 | 137/138 |
+
+- **Masks barely change:** 320 of 334 feathers keep their area within 5%. The only count change is the fixed
+  split (`A3818`).
+- **The higher flag count is the checks varying:** 19 flags changed on masks within 1%.
+- **The 14 changed masks mostly grew by 5-7%,** covering more fringe:
+  - one outline-cut flag cleared;
+  - two feathers picked up a measured-hole flag (the hole threshold again);
+  - nothing else changed.
+- **Duplicates:** the missing one is the match between a single feather and the crop that merges three
+  feathers (`BB17692 im0513` B), which was never a clean duplicate.
+
+So example boxes are a small, real gain: they fix splits and change nothing else for the worse.
+
 Next:
 - Merged feathers still need a fix: part prompts (idea 3) or flagged-only repair (idea 4).
 - The second pass could be retried with the first mask as a mask prompt instead of box + points.
+- Make the per-feather checks steadier: ask twice and flag on disagreement, or only on the checks that vary.
+- Raise the measured-hole threshold (0.2% → about 1%). Hole flags are most of the flags (44 of 62).
