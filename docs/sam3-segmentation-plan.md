@@ -104,3 +104,27 @@ Next:
 - The second pass could be retried with the first mask as a mask prompt instead of box + points.
 - Make the per-feather checks steadier: ask twice and flag on disagreement, or only on the checks that vary.
 - Raise the measured-hole threshold (0.2% → about 1%). Hole flags are most of the flags (44 of 62).
+
+## Follow-ups (2026-10-19)
+
+1. **Measured holes.** Holes found only by measurement were 0.2-1.3% of the feather. The ones checked by eye
+   were natural vane splits with background showing through. They now fail the check only from 2%
+   (`feather_judge.fail_hole_frac`); smaller ones are recorded. A mask in pieces, and the model's own "holes"
+   answer, still fail it.
+2. **Steadier checks.** On 243 feathers whose masks did not change between the runs, 227 got identical
+   answers on all nine checks. The ones that changed were mostly holes, other material inside and a cut at
+   the bottom. A failed check now gets a second look on the same panel at 80% (`feather_judge.second_look`):
+   - failed both times: a failure (`needs_review`, score, retry);
+   - failed once: listed in `review_uncertain`.
+
+   On the 24 feathers flagged in either run, the runs agree on the confirmed failures for 19, against 8 with
+   one look. Requiring confirmation alone would have cleared 6 of 12 failures both runs had seen, so those
+   stay visible as uncertain.
+3. **Merged feathers.** SAM 3 does not merge them: on `BB17692 1998-im0513` it returns 8 separate masks of
+   normal size. The three-feather crop came from the mask clean-up: "aligned pieces" (rule 3) joined parallel
+   feathers lying partly over each other. Rule 3 now needs the pieces end to end, overlapping along the axis
+   by at most a quarter of the shorter piece. The slide goes from 4 crops (three feathers fused) to 7: five
+   whole feathers and two pieces of one mostly hidden under the board. Other slides are unchanged. It was the
+   only rule-3 merge in both runs. A repair step for oversized SAM 3 masks was tried and removed, because
+   there were none to repair.
+
