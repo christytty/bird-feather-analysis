@@ -233,6 +233,15 @@ def needs_review(rec: dict) -> str:
     return "; ".join(why)
 
 
+def is_fragment(rec: dict, prefix: str = "judge_") -> bool:
+    """A piece, not a feather: the mask clean-up marked it small or narrow, and
+    the model (on two looks) sees a fragment or not a single feather. Such
+    pieces get no letter or feather ID; they stay as review rows. Without a
+    model answer the piece stays a feather (flagged)."""
+    return ("possible fragment" in str(rec.get("postprocess") or "") and rec.get(prefix + "status") == "ok"
+            and (rec.get(prefix + "fragment") is True or rec.get(prefix + "single_feather") is False))
+
+
 def uncertain_review(rec: dict, prefix: str = "judge_") -> str:
     """Checks failed on one look only (second_look): listed for review after
     the confirmed failures, not counted in the score or the retry."""
@@ -246,8 +255,8 @@ def uncertain_review(rec: dict, prefix: str = "judge_") -> str:
 def slide_checks(records: list[dict]) -> dict:
     """Slide-level view of the per-feather checks and the missed-feather flags
     (what the retired slide judge used to guess from the overlay)."""
-    judged = [r for r in records if r.get("judge_status") == "ok"]
     seg = [r for r in records if r.get("segment_status", "segmented") == "segmented"]
+    judged = [r for r in seg if r.get("judge_status") == "ok"]
     inv = next((r.get("inventory_status") for r in records if r.get("inventory_status")), None)
     scores = [r["judge_score"] for r in judged if isinstance(r.get("judge_score"), (int, float))]
     return {
@@ -255,6 +264,7 @@ def slide_checks(records: list[dict]) -> dict:
         "checks_failed": sum(len(failed_checks(r)) for r in judged),
         "judge_errors": sum(r.get("judge_status") == "model_error" for r in seg),
         "possible_missed": sum(r.get("segment_status") == "possible_missed" for r in records),
+        "fragments": sum(r.get("segment_status") == "fragment" for r in records),
         "all_feathers_covered": {"complete": True, "missed": False}.get(inv),
         "merged_feathers": (any(r.get("judge_single_feather") is False or r.get("judge_other_feather_inside")
                                 for r in judged) if judged else None),

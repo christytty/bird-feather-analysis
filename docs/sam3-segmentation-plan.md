@@ -128,3 +128,13 @@ Next:
    only rule-3 merge in both runs. A repair step for oversized SAM 3 masks was tried and removed, because
    there were none to repair.
 
+## Repairs after the checks (2026-10-19)
+
+- **Fragments are set aside.** A piece the clean-up marks small or narrow, which the check also calls a
+  fragment or not a single feather on both looks, gets no letter or feather ID. It is kept as
+  `<prefix>_Fragment_<n>.jpg` and a review row; the slide is retried like any failed check. A small piece
+  the model sees as a whole feather stays a feather, flagged `small/narrow mask`.
+- **Usable feathers.** `feathers.csv` marks each row `usable` or not with the reason; `feathers_usable.csv`
+  holds only the usable ones.
+- **Re-segmenting oversized masks on a crop: not needed.** SAM 3 returned no merged masks in either run;
+  the one merged crop came from the clean-up (rule 3, fixed above).

@@ -57,8 +57,9 @@ class DateClient:
     judge, and a fixed inventory (total feathers + missed list) for the slide check."""
     model_name = "fake"
 
-    def __init__(self, date="2000-01-01", cut=(), holes=False, total=None, missed=()):
+    def __init__(self, date="2000-01-01", cut=(), holes=False, total=None, missed=(), fragment=False):
         self.date, self.cut, self.holes, self.total, self.missed = date, list(cut), holes, total, list(missed)
+        self.fragment = fragment
         self.judge_calls = 0
 
     def ask(self, image, prompt, timeout=None, max_tokens=None):
@@ -66,7 +67,7 @@ class DateClient:
             self.judge_calls += 1
             outline = {s: ("cut" if s in self.cut else "complete") for s in ("left", "right", "top", "bottom")}
             return json.dumps({"outline": outline, "holes_or_gaps": self.holes, "single_feather": True,
-                               "fragment": False, "other_feather_inside": False, "other_material_inside": False,
+                               "fragment": self.fragment, "other_feather_inside": False, "other_material_inside": False,
                                "score": 9, "notes": "ok"})
         if "total_feathers" in prompt:
             return json.dumps({"total_feathers": self.total, "missed": self.missed, "notes": ""})
@@ -366,6 +367,102 @@ def test_missed_feather_is_a_review_row_and_letters_stay(tmp_path):
     assert rows[2]["feathers_possibly_missed"] == 1
 
 
+def _fragment_slide(tmp_path, client):
+    """Three feathers and a small isolated piece between A and B."""
+    import numpy as np
+    from src.feather_processing import FeatherProcessor
+
+    raw = tmp_path / "raw"
+    raw.mkdir(exist_ok=True)
+    slide = raw / "CE01168 2008-im2346.jpg"
+    Image.new("RGB", (400, 300), "white").save(slide)
+    ms = [np.zeros((300, 400), np.float32) for _ in range(4)]
+    boxes = [[40, 30, 80, 270], [140, 120, 160, 160], [200, 30, 240, 270], [300, 30, 340, 270]]
+    for m, (x0, y0, x1, y1) in zip(ms, boxes):
+        m[y0:y1, x0:x1] = 1
+    out = tmp_path / "out"
+    out.mkdir(exist_ok=True)
+    (out / "CE01168_2008_Fragment_2.jpg").write_bytes(b"x")     # from an earlier attempt
+    p = object.__new__(FeatherProcessor)
+    p.segmenter, p.has_vlm = "sam3", False
+    p._label_client = client
+    p._segment_sam3 = lambda *a, **k: (boxes, ms, "", [0.9] * 4)
+    labels = lx.LabelResult(str(slide), filename=lx.parse_filename(slide.name))
+    labels.fields["bird_id"] = lx.FieldResult("CE01168V", "readable")
+    labels.fields["date"] = lx.FieldResult("2008-05-22", "readable")
+    return p.process_image(str(slide), str(out), labels=labels), labels, out
+
+
+def test_fragment_gets_no_letter_or_feather_id(tmp_path):
+    """A piece the clean-up marks small and the model (twice) calls a fragment
+    is set aside: letters A, B, C skip it, it keeps a crop and QC image."""
+    res, labels, out = _fragment_slide(tmp_path, DateClient(fragment=True))
+    got = [(f["seq"], f["segment_status"], f["crop"], f["feather_id"]) for f in res.feather_ids]
+    assert got == [("A", "segmented", "CE01168_2008_Feather_A.jpg", "CE01168V_2008_A"),
+                   ("B", "segmented", "CE01168_2008_Feather_B.jpg", "CE01168V_2008_B"),
+                   ("C", "segmented", "CE01168_2008_Feather_C.jpg", "CE01168V_2008_C"),
+                   ("fragment_1", "fragment", "CE01168_2008_Fragment_1.jpg", "")]
+    frag = res.feather_ids[3]
+    assert frag["needs_review"].startswith("fragment") and (out / frag["qc_image"]).exists()
+    assert frag["qc_image"] == "feather_qc/CE01168_2008_Fragment_1_qc.jpg"
+    # whole feathers are never fragments, even when the model says so (flagged instead)
+    assert res.feather_ids[0]["needs_review"] == "fragment"
+    assert res.feathers_saved == 3 and res.qa_checks["fragments"] == 1
+    assert sorted(f.name for f in out.glob("*_Fragment_*.jpg")) == ["CE01168_2008_Fragment_1.jpg"]
+    row = labels.row()
+    assert row["feather_count"] == 3 and row["feather_ids"] == "CE01168V_2008_A;CE01168V_2008_B;CE01168V_2008_C"
+    rows = lx.feather_table_rows(labels, "r")
+    assert [(r["seq"], r["usable"], r["excluded_because"]) for r in rows] == [
+        ("A", "no", "check: fragment"), ("B", "no", "check: fragment"), ("C", "no", "check: fragment"),
+        ("fragment_1", "no", "fragment")]
+    assert [p["kind"] for p in lx.slide_problems(labels, None, {})].count("fragment") == 1
+
+
+def test_small_piece_the_model_calls_a_feather_stays_a_feather(tmp_path):
+    res, labels, out = _fragment_slide(tmp_path, DateClient())
+    assert [f["seq"] for f in res.feather_ids] == ["A", "B", "C", "D"]
+    b = res.feather_ids[1]
+    assert b["segment_status"] == "segmented" and b["needs_review"] == "small/narrow mask"
+    assert [r["usable"] for r in lx.feather_table_rows(labels, "r")] == ["yes", "no", "yes", "yes"]
+    assert not list(out.glob("*_Fragment_*.jpg"))      # the old fragment crop was removed
+
+
+def test_usable_feathers_and_filtered_export(tmp_path):
+    r = lx.LabelResult("raw/A0012 1996-im1058.jpg", filename=lx.parse_filename("A0012 1996-im1058.jpg"))
+    r.feathers = [
+        {"seq": "A", "feather_id": "A0012_1996_A", "segment_status": "segmented", "needs_review": "",
+         "review_uncertain": "holes or gaps", "crop": "a.jpg"},
+        {"seq": "B", "feather_id": "A0012_1996_B", "segment_status": "segmented", "needs_review": "",
+         "duplicate_of": "A0012_1996_A", "crop": "b.jpg"},
+        {"seq": "C", "feather_id": "A0012_1996_C", "segment_status": "segmented", "needs_review": "outline cut: top",
+         "crop": "c.jpg"},
+        {"seq": "fragment_1", "feather_id": "", "segment_status": "fragment", "needs_review": "fragment: ...",
+         "crop": "f.jpg"},
+        {"seq": "missed_1", "feather_id": "", "segment_status": "possible_missed", "needs_review": "possible ...",
+         "crop": ""},
+    ]
+    assert [lx.usable(f) for f in r.feathers] == [
+        (True, ""), (False, "duplicate of A0012_1996_A"), (False, "check: outline cut: top"),
+        (False, "fragment"), (False, "review row: possible missed feather")]
+    lx.write_feathers_csv([r], tmp_path / "all.csv", "run")
+    lx.write_feathers_csv([r], tmp_path / "usable.csv", "run", usable_only=True)
+    import csv
+    assert len(list(csv.DictReader(open(tmp_path / "all.csv")))) == 5
+    kept = list(csv.DictReader(open(tmp_path / "usable.csv")))
+    assert [k["feather_id"] for k in kept] == ["A0012_1996_A"] and kept[0]["usable"] == "yes"
+
+
+def test_bare_result_gives_ids_only_to_feathers():
+    feathers = [{"seq": "A", "crop": "A0012_1996_Feather_A.jpg", "segment_status": "segmented"},
+                {"seq": "fragment_1", "crop": "A0012_1996_Fragment_1.jpg", "segment_status": "fragment",
+                 "feather_id": ""},
+                {"seq": "B", "crop": "A0012_1996_Feather_B.jpg", "segment_status": "segmented"},
+                {"seq": "missed_1", "crop": "", "segment_status": "possible_missed", "feather_id": ""}]
+    r = lx.bare_result("raw/A0012 1996-im1058.jpg", feathers)
+    assert [(f["seq"], f.get("feather_id")) for f in r.feathers] == [
+        ("A", "A0012_1996_A"), ("fragment_1", ""), ("B", "A0012_1996_B"), ("missed_1", "")]
+
+
 def test_retry_and_choice_follow_the_checks():
     from types import SimpleNamespace as NS
 
@@ -381,3 +478,5 @@ def test_retry_and_choice_follow_the_checks():
     assert not frs.should_retry(NS(success=False, qa_checks={"feathers_failing": 3}))
     assert frs.qa_penalty(clean) == 0 and frs.qa_penalty(cut) == 2 and frs.qa_penalty(missed) == 2
     assert frs.qa_penalty(NS(success=True)) == 0  # results without checks (old workers)
+    frag = NS(success=True, qa_checks={"feathers_failing": 0, "checks_failed": 0, "fragments": 1})
+    assert frs.should_retry(frag) and frs.qa_penalty(frag) == 1

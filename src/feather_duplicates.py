@@ -202,16 +202,17 @@ def find_duplicates(slides: dict[str, list[Feather]], dates: dict[str, str | Non
 
 def apply_to_results(results, crops_dir: str | Path) -> list[dict]:
     """Marks duplicate_of on the feathers of label results (label_extract)."""
-    from src.label_extract import result_date
+    from src.label_extract import result_date, segmented
 
     slides = {r.file_id: [Feather(f["feather_id"], r.file_id, f["seq"], Path(crops_dir) / f["crop"])
-                          for f in r.feathers if f.get("crop") and (Path(crops_dir) / f["crop"]).is_file()]
+                          for f in segmented(r.feathers)
+                          if f.get("crop") and (Path(crops_dir) / f["crop"]).is_file()]
               for r in results if r.feathers}
     rows = find_duplicates(slides, {r.file_id: result_date(r) for r in results})
     dup = {r["feather_id"]: r for r in rows}
     for r in results:
         for f in r.feathers:
-            d = dup.get(f.get("feather_id"))
+            d = dup.get(f.get("feather_id")) if f.get("feather_id") else None
             f["duplicate_of"] = d["duplicate_of"] if d else ""
             f["duplicate_group"] = d["group"] if d else ""
     return rows

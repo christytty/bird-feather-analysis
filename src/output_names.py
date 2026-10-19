@@ -128,6 +128,12 @@ def crop_name(names: dict, index: int) -> str:
     return f"{names['crop_prefix']}_Feather_{seq_letter(index)}.jpg"
 
 
+def fragment_name(names: dict, k: int) -> str:
+    """k-th piece set aside as a fragment (1, 2, ...) -> '<prefix>_Fragment_1.jpg'.
+    Fragments have no letter or feather ID."""
+    return f"{names['crop_prefix']}_Fragment_{k}.jpg"
+
+
 def _seq_key(path: Path) -> tuple[int, str]:
     tail = path.stem.rsplit("_Feather_", 1)[-1]
     return (int(tail), "") if tail.isdigit() else (len(tail), tail)
@@ -161,7 +167,8 @@ def _recorded_crops(out_dir: Path, name: str) -> list[Path]:
         feathers = json.loads(rec.read_text()).get("feathers") or []
     except (OSError, ValueError):
         return []
-    paths = [out_dir / f["crop"] for f in feathers if f.get("crop")]
+    paths = [out_dir / f["crop"] for f in feathers
+             if f.get("crop") and f.get("segment_status", "segmented") == "segmented"]
     return paths if paths and all(p.exists() for p in paths) else []
 
 
@@ -198,14 +205,15 @@ def find_overlay(out_dir: str | Path, name: str, date: str | None = None) -> Pat
 
 
 def belongs_to(file_name: str, name: str, date: str | None = None) -> bool:
-    """Is `file_name` an overlay or crop of slide `name` (new or old names)?
-    Date-named outputs of same-year slides need `date` to be attributed."""
+    """Is `file_name` an overlay, crop or fragment crop of slide `name` (new or
+    old names)? Date-named outputs of same-year slides need `date` to be attributed."""
     fname = Path(file_name).name
     if fname.startswith(f"{Path(name).stem}_") and ("_Feather_" in fname or "_BoundingBoxes" in fname):
         return True
     for cand in _candidates(name, date):
-        if fname == overlay_name(cand) or (fname.startswith(f"{cand['crop_prefix']}_Feather_")
-                                           and fname.endswith(".jpg")):
+        if fname == overlay_name(cand) or (fname.endswith(".jpg") and (
+                fname.startswith(f"{cand['crop_prefix']}_Feather_")
+                or fname.startswith(f"{cand['crop_prefix']}_Fragment_"))):
             return True
     return False
 

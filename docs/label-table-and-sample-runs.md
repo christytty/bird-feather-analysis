@@ -32,6 +32,19 @@ label date instead of the year, in file names and feather IDs (`BB17692_19980612
 `BB17692H_19980612_A`); slides of the same bird from the same day also get the image number
 (`A0514_20000521-im1163_Feather_A.jpg`), as do slides whose own date cannot be read.
 
+A piece that is not a feather gets no letter: when the mask clean-up marks it small or narrow and
+the per-feather check (confirmed on a second look) calls it a fragment or not a single feather, it is
+saved as `CE01168_2008_Fragment_1.jpg` with its QC image, and listed in `feathers.csv` as a review row
+(`segment_status` `fragment`, no feather ID). The letters skip it.
+
+## Feathers usable for analysis
+
+`feathers.csv` has every feather, fragment and review row. Its `usable` column is `yes` for a feather
+with an ID that passed its checks and is not a duplicate; otherwise `excluded_because` says why
+(a failed check, `duplicate of ...`, `fragment`, a review row). Checks failed on one look only
+(`review_uncertain`) and label problems (`label_needs_review`) do not exclude a feather.
+`feathers_usable.csv` has only the usable rows; `summary.json` counts `feathers_usable` and `fragments`.
+
 ## Duplicate feathers
 
 Code: `src/feather_duplicates.py`. Same-day slides of one bird often repeat a

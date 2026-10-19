@@ -56,8 +56,10 @@ class ProcessResult:
     # One record per saved crop, left to right: seq (A, B, ...), crop file,
     # feather_id (<bird_id>_<period>_<seq>, when labels were read) with where
     # bird_id/period came from, mask measurements, clean-up notes and the
-    # per-feather VLM judge result (judge_*). Possibly missed feathers follow as
-    # review rows (segment_status 'possible_missed', no letter, crop or ID).
+    # per-feather VLM judge result (judge_*). Fragments follow (segment_status
+    # 'fragment', crop '<prefix>_Fragment_<n>.jpg', no letter or ID), then possibly
+    # missed feathers as review rows (segment_status 'possible_missed', no letter,
+    # crop or ID).
     feather_ids: list = field(default_factory=list)
     # Slide-level view of the per-feather checks (feather_judge.slide_checks);
     # the retry decision uses these, not a score.
@@ -473,12 +475,12 @@ class FeatherProcessor:
             source_name = os.path.basename(image_path)
             for old in os.listdir(output_dir):
                 # crops from an earlier attempt at this slide (new or old names)
-                if "_Feather_" in old and old.endswith(".jpg") and on.belongs_to(old, source_name, label_date):
+                if (("_Feather_" in old or "_Fragment_" in old) and old.endswith(".jpg")
+                        and on.belongs_to(old, source_name, label_date)):
                     try:
                         os.remove(os.path.join(output_dir, old))
                     except OSError:
                         pass
-            # Letters A, B, C ... and crop names come from the segmentation alone (left to right).
             feathers_to_save = feathers[: int(cfg["crop"].get("max_feathers", 8))]
             jcfg, icfg = cfg.get("feather_judge", {}), cfg.get("inventory", {})
             vlm_client = self.label_client() if (jcfg.get("enabled") or icfg.get("enabled")) else None
@@ -522,31 +524,51 @@ class FeatherProcessor:
             # label extractor owns bird ID and date, and the inventory plus the per-feather
             # checks below cover what it asked.
 
-            records = []
+            # Each piece is checked first, then named: pieces the clean-up marked small or narrow
+            # that the model also sees as a fragment get no letter or feather ID (review rows,
+            # crop '<prefix>_Fragment_<n>.jpg'); the feathers are lettered A, B, C ... left to right.
             judge_client = vlm_client if jcfg.get("enabled") else None
-            for i, feather in enumerate(feathers_to_save):
-                letter = on.seq_letter(i)
+            checked = []
+            for feather in feathers_to_save:
                 crop = feather["crop"]
                 img_yuv = cv2.cvtColor(crop, cv2.COLOR_BGR2YUV)
                 img_yuv[:, :, 0] = cv2.equalizeHist(img_yuv[:, :, 0])
                 crop_eq = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
-
-                filename = on.crop_name(names, i)
-                cv2.imwrite(os.path.join(output_dir, filename), crop_eq)
-                rec = {"seq": letter, "crop": filename, "segment_status": "segmented", **feather["record"]}
+                rec = {"segment_status": "segmented", **feather["record"]}
+                panel = None
                 if judge_client is not None:
                     # per-feather checks on the untrimmed mask; the panel is kept for review
                     res, panel = feather_judge.judge(judge_client, img, feather["full_mask"], crop_eq, jcfg)
+                    rec.update({"judge_" + k: v for k, v in res.items()})
+                else:
+                    rec["judge_status"] = "disabled"
+                if feather_judge.is_fragment(rec):
+                    rec["segment_status"] = "fragment"
+                checked.append((rec, crop_eq, panel))
+            records, fragments, labels_by_index = [], [], {}
+            for i, (rec, crop_eq, panel) in enumerate(checked):
+                if rec["segment_status"] == "fragment":
+                    k = len(fragments) + 1
+                    seq, filename = f"fragment_{k}", on.fragment_name(names, k)
+                else:
+                    seq, filename = on.seq_letter(len(records)), on.crop_name(names, len(records))
+                labels_by_index[i] = seq
+                cv2.imwrite(os.path.join(output_dir, filename), crop_eq)
+                rec = {"seq": seq, "crop": filename, **rec}
+                if panel is not None:
                     os.makedirs(qc_dir, exist_ok=True)
                     qc_name = filename[:-4] + "_qc.jpg"
                     panel.save(os.path.join(qc_dir, qc_name), quality=85)
-                    rec.update({"judge_" + k: v for k, v in res.items()})
                     rec["qc_image"] = f"feather_qc/{qc_name}"
+                if rec["segment_status"] == "fragment":
+                    rec["feather_id"] = ""
+                    rec["needs_review"] = ("fragment: small or narrow piece the model sees as part of a feather "
+                                           "(no letter or feather ID; check the QC image)")
+                    fragments.append(rec)
                 else:
-                    rec["judge_status"] = "disabled"
-                rec["needs_review"] = feather_judge.needs_review(rec)
-                rec["review_uncertain"] = feather_judge.uncertain_review(rec)
-                records.append(rec)
+                    rec["needs_review"] = feather_judge.needs_review(rec)
+                    rec["review_uncertain"] = feather_judge.uncertain_review(rec)
+                    records.append(rec)
             feather_ids = records
             if labels is not None:
                 from src import label_extract as lx
@@ -554,12 +576,13 @@ class FeatherProcessor:
                 ids = lx.assign_feather_ids(labels, [r["crop"] for r in records], names["period"],
                                             seqs=[r["seq"] for r in records])
                 feather_ids = [{**rec, **fid} for rec, fid in zip(records, ids)]
+            feather_ids = feather_ids + fragments
             if inv_items:
                 from src import feather_inventory
 
                 feather_ids = feather_ids + [
                     {"feather_id": "", **row} for row in feather_inventory.review_rows(
-                        inv_items, inventory, {i: on.seq_letter(i) for i in range(len(feathers_to_save))})]
+                        inv_items, inventory, labels_by_index)]
             for rec in feather_ids:
                 rec.update({k: v for k, v in inventory.items() if k != "inventory_raw"})
             if labels is not None:
@@ -574,6 +597,8 @@ class FeatherProcessor:
                        if feather_judge.failed_checks(r)]
             vlm_notes = "; ".join(failing) or ("all feathers passed" if checks["judge_errors"] == 0 and records
                                                else "")
+            if fragments:
+                vlm_notes = (vlm_notes + "; " if vlm_notes else "") + f"{len(fragments)} fragment(s) set aside"
             if checks["possible_missed"]:
                 vlm_notes = (vlm_notes + "; " if vlm_notes else "") + f"{checks['possible_missed']} possible missed"
             return ProcessResult(
