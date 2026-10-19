@@ -147,7 +147,17 @@ def _feathers(run: str) -> pd.DataFrame:
     return _FEATHERS[run]
 
 
-def compare(run: str, verdicts: Path) -> pd.DataFrame:
+def same_mask(run_a: str, run_b: str, crop: str) -> bool:
+    """The same raw segmentation of a feather in two runs (both saved feather_masks/)."""
+    a = cv2.imread(str(REPO / "data/sample_runs" / run_a / "feather_masks" / (Path(crop).stem + ".png")), 0)
+    b = cv2.imread(str(REPO / "data/sample_runs" / run_b / "feather_masks" / (Path(crop).stem + ".png")), 0)
+    if a is None or b is None or a.shape != b.shape:
+        return False
+    a, b = a > 0, b > 0
+    return (a & b).sum() / max(1, (a | b).sum()) > 0.98
+
+
+def compare(run: str, verdicts: Path, via: str | None = None) -> pd.DataFrame:
     """Per variant, on the feathers you judged: bad feathers it flagged (caught), bad ones it passed
     (missed, the costly kind) and good ones it flagged (false alarms). Verdicts from another run
     (verdicts_<other run>.csv) count only where the crop is identical in both runs."""
@@ -155,8 +165,13 @@ def compare(run: str, verdicts: Path) -> pd.DataFrame:
     v = v[v.verdict.isin(["good", "bad"])].set_index("crop")
     other = verdicts.stem.removeprefix("verdicts_")
     if other != run:
-        keep = [c for c in v.index if same_crop(REPO / "data/sample_runs" / other / c, REPO / "data/sample_runs" / run / c)]
-        print(f"verdicts from {other}: {len(keep)} of {len(v)} crops identical in {run}")
+        if via:   # crops changed (e.g. glue clean-up): link through a run with the same crops and saved masks
+            keep = [c for c in v.index if same_crop(REPO / "data/sample_runs" / other / c, REPO / "data/sample_runs" / via / c)
+                    and same_mask(via, run, c)]
+            print(f"verdicts from {other}: {len(keep)} of {len(v)} feathers with the same segmentation in {run} (via {via})")
+        else:
+            keep = [c for c in v.index if same_crop(REPO / "data/sample_runs" / other / c, REPO / "data/sample_runs" / run / c)]
+            print(f"verdicts from {other}: {len(keep)} of {len(v)} crops identical in {run}")
         v = v.loc[keep]
     rows = []
     variants = {"run (as shipped)": None, **{p.name: p for p in sorted((REPO / "data/review/rejudge" / run).glob("*"))
@@ -169,6 +184,8 @@ def compare(run: str, verdicts: Path) -> pd.DataFrame:
         removed = {}
         if p is None:
             flags = dict(zip(fdf.crop, fdf.needs_review != ""))
+            if "mask_cleanup" in fdf:   # the run's own glue/card clean-up (a cut, not a measured share)
+                removed = {c: 0.01 for c, n in zip(fdf.crop, fdf.mask_cleanup.fillna("")) if n}
         else:
             r = [json.loads(l) for l in (p / "results.jsonl").read_text().splitlines() if l.strip()]
             if "hidden" in json.loads((p / "settings.json").read_text())["overrides"]:
@@ -200,10 +217,11 @@ def main() -> int:
     ap.add_argument("--compare", action="store_true")
     ap.add_argument("--cleanup", action="store_true", help="remove glue/card first (crop.cleanup)")
     ap.add_argument("--verdicts", help="verdicts CSV (default: data/review/verdicts_<run>.csv)")
+    ap.add_argument("--via", help="with --compare: a run with the verdicts' crops and saved masks, to link them to this run")
     args = ap.parse_args()
     verdicts = Path(args.verdicts) if args.verdicts else REPO / "data/review" / f"verdicts_{args.run}.csv"
     if args.compare:
-        print(compare(args.run, verdicts).to_string())
+        print(compare(args.run, verdicts, args.via).to_string())
         return 0
     rejudge(args.run, args.variant, json.loads(args.set), Path(args.sample) if args.sample else None,
             args.endpoint, args.model, args.cleanup)
