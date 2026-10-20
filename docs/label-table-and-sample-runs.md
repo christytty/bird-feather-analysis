@@ -74,3 +74,21 @@ that are not on the slide. Label-only runs on the workers:
 `pixi run sample-run -- --n 5` (or `--match "A0012 1996"`) sends
 slides through the workers' normal pipeline and copies the outputs to `data/sample_runs/`.
 Their run ids start with `test-`.
+
+## Parking and restarting the cluster
+
+**Park** (as done on 2026-10-20): `touch PAUSED` in the repo folder on every node, then stop the workers and
+the VLM server; whatever restarts them (watchdog, launchd) brings them back as small placeholders that load
+nothing (`src/node.py`). Model weights can then be deleted to free disk; they are not in git.
+
+**Restart:**
+1. On every node, update the repo (`git pull`) and put the SAM 3 weights back as `sam3.pt` in the repo root
+   (gated: https://huggingface.co/facebook/sam3). Do this first: without `sam3.pt` the workers silently fall
+   back to `dino_sam2`.
+2. `rm PAUSED` on every node. Within a minute the placeholders start the real worker / VLM server. The VLM
+   (`FEATHER_VLM_MODEL`, Qwen3.8-27B 4-bit, about 16 GB) downloads from Hugging Face on first use, so the first
+   slide on each node takes a few extra minutes.
+3. Check with `cluster_control.worker_status()` (or `notebooks/run_control.ipynb`), then run a small sample
+   before a big run. Reruns of slides already processed can reuse their labels:
+   `launch_run(names, run_id, reuse_labels_from="<earlier run>")`.
+
