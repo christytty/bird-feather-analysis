@@ -56,12 +56,61 @@ class ProcessResult:
     # One record per saved crop, left to right: seq (A, B, ...), crop file,
     # feather_id (<bird_id>_<period>_<seq>, when labels were read) with where
     # bird_id/period came from, mask measurements, clean-up notes and the
-    # per-feather VLM judge result (judge_*). Possibly missed feathers follow as
-    # review rows (segment_status 'possible_missed', no letter, crop or ID).
+    # per-feather VLM judge result (judge_*). Fragments follow (segment_status
+    # 'fragment', crop '<prefix>_Fragment_<n>.jpg', no letter or ID), then possibly
+    # missed feathers as review rows (segment_status 'possible_missed', no letter,
+    # crop or ID).
     feather_ids: list = field(default_factory=list)
     # Slide-level view of the per-feather checks (feather_judge.slide_checks);
     # the retry decision uses these, not a score.
     qa_checks: dict = field(default_factory=dict)
+
+
+def make_feather(img: np.ndarray, full_mask: np.ndarray, trim: float, min_part: float,
+                 cleanup: dict | None = None) -> dict | None:
+    """The saved crop of one feather mask: the slide pixels inside it on black, the bottom
+    `trim` share of its box cut off (the quill base and glue); None for an empty mask.
+    With `cleanup` (crop.cleanup), glue and card found by src/mask_cleanup.py are removed
+    first; the crop's bottom is then the higher of that cut and the trim line."""
+    from src import segment_postprocess as sp
+
+    notes: list[str] = []
+    trim_ref = raw_mask = full_mask
+    if cleanup and cleanup.get("enabled") and full_mask.any():
+        from src import mask_cleanup
+
+        full_mask, _, notes = mask_cleanup.clean(img, full_mask, cleanup)
+
+    contours, _ = cv2.findContours(full_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # all parts of a merged feather (pieces across a board edge), not just the largest
+    contours = [c for c in contours if cv2.contourArea(c) >= min_part] or \
+        ([max(contours, key=cv2.contourArea)] if contours else [])
+    if not contours:
+        return None
+    x, y, w, h = cv2.boundingRect(np.vstack(contours))
+    ry, rh = cv2.boundingRect(trim_ref.astype(np.uint8))[1::2]           # trim line of the uncleaned mask
+    y_max = min(y + h, ry + rh - int(rh * trim))
+    final_mask = np.zeros_like(img)
+    cv2.drawContours(final_mask, contours, -1, (255, 255, 255), -1)
+    final_mask[y_max:, :] = 0
+    feather_crop = cv2.bitwise_and(img, final_mask)[y:y_max, x:x + w]
+    stats = sp.shape_stats(full_mask)
+    return {"x": x, "crop": feather_crop, "mask": final_mask[:, :, 0] > 0,
+            "full_mask": full_mask,   # untrimmed segmentation (after glue/card clean-up)
+            "raw_mask": raw_mask,     # the segmentation as it came, for measured checks
+            "record": {"bbox": [x, y, x + w, y_max], "area_px": stats["area"],
+                       "length_px": round(stats["length"]), "width_px": round(stats["width"]),
+                       "angle_deg": round(stats["angle"], 1),
+                       "touches_border": bool(x <= 2 or y <= 2 or x + w >= img.shape[1] - 2
+                                              or y + h >= img.shape[0] - 2),
+                       "mask_cleanup": "; ".join(notes)}}
+
+
+def equalized(crop: np.ndarray) -> np.ndarray:
+    """The saved crop's look: luminance histogram-equalized."""
+    img_yuv = cv2.cvtColor(crop, cv2.COLOR_BGR2YUV)
+    img_yuv[:, :, 0] = cv2.equalizeHist(img_yuv[:, :, 0])
+    return cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
 
 
 class FeatherProcessor:
@@ -292,6 +341,58 @@ class FeatherProcessor:
         return ([boxes[int(i)] for i in keep], [masks[int(i)] for i in keep], "",
                 [scores[int(i)] for i in keep])
 
+    def _interactive(self):
+        """SAM 3's interactive predictor (box + points), loaded on first use; None without SAM 3."""
+        if getattr(self, "sam3", None) is None:
+            return None
+        if getattr(self, "_sam3_inter", None) is None:
+            from ultralytics.models.sam import SAM3Predictor
+
+            self._sam3_inter = SAM3Predictor(overrides={
+                "model": self.sam3_weights, "imgsz": int(os.getenv("FEATHER_SAM3_IMGSZ", "1008")),
+                "task": "segment", "mode": "predict", "save": False, "verbose": False,
+                "device": "mps" if torch.backends.mps.is_available() else "cpu"})
+        return self._sam3_inter
+
+    @staticmethod
+    def _judge_feather(client, img, feather, crop_eq, jcfg, rel_area=None):
+        """Per-feather checks on the saved crop's mask (bottom trimmed) or the untrimmed one
+        (feather_judge.judge_mask); the panel is kept for review."""
+        from src import feather_judge
+
+        jmask = feather["mask"] if jcfg.get("judge_mask", "full") == "saved" else feather["full_mask"]
+        res, panel = feather_judge.judge(client, img, jmask, crop_eq, jcfg, rel_area, feather.get("raw_mask"))
+        return res, panel
+
+    def _repair(self, client, img, feather, rec, others, jcfg, rcfg, trim, min_part, rel_area=None):
+        """Repair attempts for one checked feather (src/feather_repair.py). Returns
+        (feather, crop, record, panel) of the best attempt that fails fewer checks and
+        nothing new, or None (the first mask stays; the record notes what was tried)."""
+        from src import feather_judge, feather_repair
+
+        old = feather_repair.fail_items(rec)
+        tried, best = [], None
+        for name, mask in feather_repair.candidates(rec, self._interactive(), img, feather["full_mask"], others, rcfg):
+            f = make_feather(img, mask, trim, min_part, getattr(self, "_cleanup_cfg", None))
+            if f is None:
+                continue
+            f["record"].update({k: feather["record"].get(k) for k in ("sam_score", "sam_masks", "postprocess")})
+            crop_eq = equalized(f["crop"])
+            res, panel = self._judge_feather(client, img, f, crop_eq, jcfg, rel_area)
+            r2 = {"segment_status": "segmented", **f["record"], **{"judge_" + k: v for k, v in res.items()}}
+            feather_judge.demote_unsupported(r2, jcfg)
+            new = feather_repair.fail_items(r2) if res.get("status") == "ok" else None
+            tried.append(f"{name}: " + ("check failed" if new is None else ("; ".join(sorted(new)) or "passed")))
+            if new is not None and feather_repair.better(old, new) and (best is None or len(new) < best[0]):
+                best = (len(new), f, crop_eq, r2, panel, name)
+        if best is None:
+            rec["repair"] = "tried, kept the first mask: " + (" | ".join(tried) or "no new mask")
+            return None
+        _, f, crop_eq, r2, panel, name = best
+        r2["repair"] = f"{name} (before: {'; '.join(sorted(old))})"
+        r2["repair_tried"] = " | ".join(tried)
+        return f, crop_eq, r2, panel
+
     def _sam3_extras(self, image_path, img_pil, out, seg, prompts, nms_iou, max_box_area_ratio):
         """Optional steps after the text prompt (src/sam3_extras.py), each switched
         on in configs/segmentation.json: sam3.exemplar, then sam3.refine."""
@@ -304,14 +405,7 @@ class FeatherProcessor:
             out = sam3_extras.exemplar_pass(self.sam3, image_path, img_pil.size, prompts[0].rstrip("."), out, ex,
                                             nms_iou, max_box_area_ratio, seg.get("conf"))
         if ref.get("enabled") and not out[2]:
-            if self._sam3_inter is None:
-                from ultralytics.models.sam import SAM3Predictor
-
-                self._sam3_inter = SAM3Predictor(overrides={
-                    "model": self.sam3_weights, "imgsz": int(os.getenv("FEATHER_SAM3_IMGSZ", "1008")),
-                    "task": "segment", "mode": "predict", "save": False, "verbose": False,
-                    "device": "mps" if torch.backends.mps.is_available() else "cpu"})
-            out, info = sam3_extras.refine_pass(self._sam3_inter, image_path, out, ref)
+            out, info = sam3_extras.refine_pass(self._interactive(), image_path, out, ref)
             logging.info("sam3.refine %s", info)
         return out
 
@@ -365,7 +459,7 @@ class FeatherProcessor:
         """`labels`: this slide's label result (extract_labels); when given, the
         saved crops get feather IDs from its bird ID and year. `options`:
         {'segmentation': {...}} overrides configs/segmentation.json for this slide."""
-        from src import feather_judge
+        from src import feather_judge, feather_repair
         from src import segment_postprocess as sp
 
         cfg = load_seg_config((options or {}).get("segmentation"))
@@ -412,34 +506,15 @@ class FeatherProcessor:
             trim = float(cfg["crop"].get("trim_bottom_frac", 0.12))
             min_part = sp.DEFAULTS["min_area_frac"] * img.shape[0] * img.shape[1] * 0.25
 
+            cleanup = cfg["crop"].get("cleanup") or {}
+            self._cleanup_cfg = cleanup       # repair attempts are cleaned the same way
             for piece in pieces:
-                binary_mask = piece.mask.astype(np.uint8)
-                contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                # all parts of a merged feather (pieces across a board edge), not just the largest
-                contours = [c for c in contours if cv2.contourArea(c) >= min_part] or \
-                    ([max(contours, key=cv2.contourArea)] if contours else [])
-                if not contours:
+                f = make_feather(img, piece.mask, trim, min_part, cleanup)
+                if f is None:
                     continue
-                x, y, w, h = cv2.boundingRect(np.vstack(contours))
-                y_max = y + h - int(h * trim)
-
-                final_mask = np.zeros_like(img)
-                cv2.drawContours(final_mask, contours, -1, (255, 255, 255), -1)
-                final_mask[y_max:, :] = 0
-
-                clean_feather = cv2.bitwise_and(img, final_mask)
-                feather_crop = clean_feather[y:y_max, x : x + w]
-                stats = sp.shape_stats(piece.mask)
-                feathers.append({"x": x, "crop": feather_crop, "mask": final_mask[:, :, 0] > 0,
-                                 "full_mask": piece.mask,   # untrimmed segmentation, judged as is
-                                 "record": {"bbox": [x, y, x + w, y_max], "area_px": stats["area"],
-                                            "length_px": round(stats["length"]), "width_px": round(stats["width"]),
-                                            "angle_deg": round(stats["angle"], 1),
-                                            "touches_border": bool(x <= 2 or y <= 2 or x + w >= img.shape[1] - 2
-                                                                   or y + h >= img.shape[0] - 2),
-                                            "sam_score": round(float(piece.score), 3),
-                                            "sam_masks": len(piece.sources),
-                                            "postprocess": "; ".join(piece.notes)}})
+                f["record"].update({"sam_score": round(float(piece.score), 3), "sam_masks": len(piece.sources),
+                                    "postprocess": "; ".join(piece.notes)})
+                feathers.append(f)
 
             if not feathers:
                 return ProcessResult(
@@ -473,12 +548,19 @@ class FeatherProcessor:
             source_name = os.path.basename(image_path)
             for old in os.listdir(output_dir):
                 # crops from an earlier attempt at this slide (new or old names)
-                if "_Feather_" in old and old.endswith(".jpg") and on.belongs_to(old, source_name, label_date):
+                if (("_Feather_" in old or "_Fragment_" in old) and old.endswith(".jpg")
+                        and on.belongs_to(old, source_name, label_date)):
                     try:
                         os.remove(os.path.join(output_dir, old))
                     except OSError:
                         pass
-            # Letters A, B, C ... and crop names come from the segmentation alone (left to right).
+            mask_dir = os.path.join(output_dir, "feather_masks")
+            for old in (os.listdir(mask_dir) if os.path.isdir(mask_dir) else []):
+                if old.endswith(".png") and on.belongs_to(old[:-4] + ".jpg", source_name, label_date):
+                    try:
+                        os.remove(os.path.join(mask_dir, old))
+                    except OSError:
+                        pass
             feathers_to_save = feathers[: int(cfg["crop"].get("max_feathers", 8))]
             jcfg, icfg = cfg.get("feather_judge", {}), cfg.get("inventory", {})
             vlm_client = self.label_client() if (jcfg.get("enabled") or icfg.get("enabled")) else None
@@ -522,30 +604,69 @@ class FeatherProcessor:
             # label extractor owns bird ID and date, and the inventory plus the per-feather
             # checks below cover what it asked.
 
-            records = []
+            # Each piece is checked first, then named: pieces the clean-up marked small or narrow
+            # that the model also sees as a fragment get no letter or feather ID (review rows,
+            # crop '<prefix>_Fragment_<n>.jpg'); the feathers are lettered A, B, C ... left to right.
             judge_client = vlm_client if jcfg.get("enabled") else None
-            for i, feather in enumerate(feathers_to_save):
-                letter = on.seq_letter(i)
-                crop = feather["crop"]
-                img_yuv = cv2.cvtColor(crop, cv2.COLOR_BGR2YUV)
-                img_yuv[:, :, 0] = cv2.equalizeHist(img_yuv[:, :, 0])
-                crop_eq = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
-
-                filename = on.crop_name(names, i)
-                cv2.imwrite(os.path.join(output_dir, filename), crop_eq)
-                rec = {"seq": letter, "crop": filename, "segment_status": "segmented", **feather["record"]}
+            rcfg = jcfg.get("repair") or {}
+            repairs_left = int(rcfg.get("max_per_slide", 6))
+            checked = []
+            med_area = float(np.median([f["raw_mask"].sum() for f in feathers_to_save])) if feathers_to_save else 0
+            for fi, feather in enumerate(feathers_to_save):
+                crop_eq = equalized(feather["crop"])
+                rec = {"segment_status": "segmented", **feather["record"]}
+                panel = None
                 if judge_client is not None:
-                    # per-feather checks on the untrimmed mask; the panel is kept for review
-                    res, panel = feather_judge.judge(judge_client, img, feather["full_mask"], crop_eq, jcfg)
+                    rel_area = feather["raw_mask"].sum() / med_area if med_area else None
+                    res, panel = self._judge_feather(judge_client, img, feather, crop_eq, jcfg, rel_area)
+                    rec.update({"judge_" + k: v for k, v in res.items()})
+                    feather_judge.demote_unsupported(rec, jcfg)
+                    if rcfg.get("enabled") and repairs_left > 0 and feather_repair.worth_repairing(rec):
+                        # second sweep: new masks for a fixable failure, kept only if they check better
+                        repairs_left -= 1
+                        others = [f["full_mask"] for j, f in enumerate(feathers_to_save) if j != fi]
+                        better = self._repair(judge_client, img, feather, rec, others, jcfg, rcfg, trim, min_part,
+                                              rel_area)
+                        if better is not None:
+                            feather, crop_eq, rec, panel = better
+                else:
+                    rec["judge_status"] = "disabled"
+                if feather_judge.is_fragment(rec):
+                    rec["segment_status"] = "fragment"
+                checked.append((rec, crop_eq, panel, feather))
+            records, fragments, labels_by_index = [], [], {}
+            save_masks = bool(cfg["crop"].get("save_masks", True))
+            for i, (rec, crop_eq, panel, feather) in enumerate(checked):
+                if rec["segment_status"] == "fragment":
+                    k = len(fragments) + 1
+                    seq, filename = f"fragment_{k}", on.fragment_name(names, k)
+                else:
+                    seq, filename = on.seq_letter(len(records)), on.crop_name(names, len(records))
+                labels_by_index[i] = seq
+                cv2.imwrite(os.path.join(output_dir, filename), crop_eq)
+                rec = {"seq": seq, "crop": filename, **rec}
+                if save_masks:
+                    # the segmentation as it came (before glue/card clean-up, which is recomputed from it),
+                    # so checks can be re-run later on exactly this segmentation
+                    os.makedirs(os.path.join(output_dir, "feather_masks"), exist_ok=True)
+                    mask_name = f"feather_masks/{filename[:-4]}.png"
+                    cv2.imwrite(os.path.join(output_dir, mask_name), feather["raw_mask"].astype(np.uint8) * 255,
+                                [cv2.IMWRITE_PNG_COMPRESSION, 9])
+                    rec["mask_image"] = mask_name
+                if panel is not None:
                     os.makedirs(qc_dir, exist_ok=True)
                     qc_name = filename[:-4] + "_qc.jpg"
                     panel.save(os.path.join(qc_dir, qc_name), quality=85)
-                    rec.update({"judge_" + k: v for k, v in res.items()})
                     rec["qc_image"] = f"feather_qc/{qc_name}"
+                if rec["segment_status"] == "fragment":
+                    rec["feather_id"] = ""
+                    rec["needs_review"] = ("fragment: small or narrow piece the model sees as part of a feather "
+                                           "(no letter or feather ID; check the QC image)")
+                    fragments.append(rec)
                 else:
-                    rec["judge_status"] = "disabled"
-                rec["needs_review"] = feather_judge.needs_review(rec)
-                records.append(rec)
+                    rec["needs_review"] = feather_judge.needs_review(rec)
+                    rec["review_uncertain"] = feather_judge.uncertain_review(rec)
+                    records.append(rec)
             feather_ids = records
             if labels is not None:
                 from src import label_extract as lx
@@ -553,12 +674,13 @@ class FeatherProcessor:
                 ids = lx.assign_feather_ids(labels, [r["crop"] for r in records], names["period"],
                                             seqs=[r["seq"] for r in records])
                 feather_ids = [{**rec, **fid} for rec, fid in zip(records, ids)]
+            feather_ids = feather_ids + fragments
             if inv_items:
                 from src import feather_inventory
 
                 feather_ids = feather_ids + [
                     {"feather_id": "", **row} for row in feather_inventory.review_rows(
-                        inv_items, inventory, {i: on.seq_letter(i) for i in range(len(feathers_to_save))})]
+                        inv_items, inventory, labels_by_index)]
             for rec in feather_ids:
                 rec.update({k: v for k, v in inventory.items() if k != "inventory_raw"})
             if labels is not None:
@@ -573,6 +695,8 @@ class FeatherProcessor:
                        if feather_judge.failed_checks(r)]
             vlm_notes = "; ".join(failing) or ("all feathers passed" if checks["judge_errors"] == 0 and records
                                                else "")
+            if fragments:
+                vlm_notes = (vlm_notes + "; " if vlm_notes else "") + f"{len(fragments)} fragment(s) set aside"
             if checks["possible_missed"]:
                 vlm_notes = (vlm_notes + "; " if vlm_notes else "") + f"{checks['possible_missed']} possible missed"
             return ProcessResult(

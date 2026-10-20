@@ -66,6 +66,21 @@ def test_measured_hole_overrides_a_clean_model_answer():
     assert fj.needs_review({f"judge_{k}": v for k, v in res.items()}) == "holes or gaps"
 
 
+def test_small_measured_hole_is_recorded_but_not_a_failure():
+    """A pocket under fail_hole_frac (natural vane split) is measured, not flagged."""
+    slide = np.full((200, 100, 3), 200, np.uint8)
+    m = np.zeros((200, 100), bool)
+    m[20:180, 30:70] = True                  # 6400 px
+    m[100:104, 48:52] = False                # 16 px = 0.25 % of the feather
+    res, _ = fj.judge(_Client(_answer()), slide, m, None, {"prompt": "x", "panel_height": 200})
+    assert res["holes"] == 1 and 0 < res["hole_frac"] < 0.02
+    assert res["holes_or_gaps"] is False and res["score"] == 10
+    assert fj.needs_review({f"judge_{k}": v for k, v in res.items()}) == ""
+    # the model's own "holes" answer still counts
+    res2, _ = fj.judge(_Client(_answer(holes_or_gaps=True)), slide, m, None, {"prompt": "x", "panel_height": 200})
+    assert res2["holes_or_gaps"] is True
+
+
 def test_inventory_merge_places_missed_feathers_in_sequence():
     inv = fi.parse(json.dumps({"total_feathers": 4, "missed": [{"between": [2, 3], "x_center": 0.6,
                                                                 "partly_hidden": True}]}), 3)
@@ -93,3 +108,85 @@ def test_inventory_contradictions_are_flagged_not_trusted():
     # failed request: letters stay as segmented
     items, status, _ = fi.merge([100.0, 300.0], {"status": "model_error", "error": "timeout"}, 1000)
     assert status == "model_error" and [it["kind"] for it in items] == ["segmented", "segmented"]
+
+
+class _SeqClient:
+    """Answers in order; an Exception item is raised."""
+    def __init__(self, *answers):
+        self.answers, self.calls = list(answers), 0
+
+    def ask(self, image, prompt, max_tokens=None):
+        self.calls += 1
+        a = self.answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+
+def _mask():
+    m = np.zeros((200, 100), bool)
+    m[20:180, 30:70] = True
+    return m
+
+
+CFG2 = {"prompt": "x", "panel_height": 200, "second_look": {"enabled": True, "scale": 0.8}}
+
+
+def test_second_look_confirms_or_moves_failures_to_uncertain():
+    slide = np.full((200, 100, 3), 200, np.uint8)
+    c = _SeqClient(_answer(bottom="cut", other_material_inside=True), _answer(bottom="cut"))
+    res, _ = fj.judge(c, slide, _mask(), None, CFG2)
+    rec = {f"judge_{k}": v for k, v in res.items()}
+    assert c.calls == 2 and res["sides_cut"] == ["bottom"] and res["other_material_inside"] is False
+    assert res["uncertain_checks"] == ["other_material_inside"] and res["score"] == 8
+    assert fj.needs_review(rec) == "outline cut: bottom"
+    assert fj.uncertain_review(rec) == "non-feather material inside"
+
+
+def test_second_look_only_when_something_failed_and_never_clears_on_an_error():
+    slide = np.full((200, 100, 3), 200, np.uint8)
+    c = _SeqClient(_answer())
+    res, _ = fj.judge(c, slide, _mask(), None, CFG2)
+    assert c.calls == 1 and res["uncertain_checks"] == [] and res["score"] == 10
+    c = _SeqClient(_answer(left="cut"), TimeoutError("server"))
+    res, _ = fj.judge(c, slide, _mask(), None, CFG2)
+    assert res["sides_cut"] == ["left"] and res["uncertain_checks"] == [] and "failed" in res["second_look"]
+    # switched off: one look, as before
+    c = _SeqClient(_answer(left="cut"))
+    res, _ = fj.judge(c, slide, _mask(), None, {"prompt": "x", "panel_height": 200})
+    assert c.calls == 1 and res["sides_cut"] == ["left"]
+
+
+def test_straight_outline_and_hidden_level():
+    import numpy as np
+    from src import feather_judge as fj
+
+    ragged = np.zeros((400, 200), bool)
+    yy, xx = np.mgrid[0:400, 0:200]
+    wobble = 6 * np.sin(yy / 4.0)                                                   # barbs: a ragged edge
+    ragged[((xx - 100 + wobble) / 60.0) ** 2 + ((yy - 200) / 180.0) ** 2 <= 1] = True
+    cut = ragged.copy()
+    cut[:, 110:] = False                                                            # a board edge down its length
+    (t0, l0), (t1, l1) = fj.straight_outline(ragged), fj.straight_outline(cut)
+    assert t0 < 0.2 and t1 >= 0.45 and l1 >= 0.2
+    cfg = {"hidden": {}}
+    assert fj.hidden_level(t0, l0, 1.0, cfg) == "none"
+    assert fj.hidden_level(t1, l1, 1.0, cfg) == "part"
+    assert fj.hidden_level(t1, l1, 0.3, cfg) == "most"
+    assert fj.hidden_level(0.5, 0.19, 1.0, cfg) == "none"     # several short straight runs: a vane edge
+
+
+def test_model_only_holes_and_fragments_need_support():
+    from src import feather_judge as fj
+
+    cfg = {"needs_support": ["holes_or_gaps", "fragment"], "fail_hole_frac": 0.02}
+    rec = {"judge_status": "ok", "judge_sides_cut": [], "judge_holes_or_gaps": True, "judge_hole_frac": 0.0,
+           "judge_mask_parts": 1, "judge_single_feather": True, "judge_fragment": True,
+           "judge_other_feather_inside": False, "judge_other_material_inside": False, "judge_score": 3}
+    fj.demote_unsupported(rec, cfg)
+    assert fj.failed_checks(rec) == [] and rec["judge_score"] == 10
+    assert rec["judge_uncertain_checks"] == ["fragment", "holes_or_gaps"]
+    backed = {**rec, "judge_holes_or_gaps": True, "judge_hole_frac": 0.05, "judge_fragment": True,
+              "postprocess": "possible fragment (small or narrow, not touching another feather)"}
+    fj.demote_unsupported(backed, cfg)
+    assert fj.failed_checks(backed) == ["holes or gaps", "fragment"]

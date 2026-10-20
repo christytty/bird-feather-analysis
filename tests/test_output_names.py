@@ -67,6 +67,8 @@ def test_belongs_to():
     assert on.belongs_to("CE01168 2008_BoundingBoxes.jpg", "CE01168 2008-im2346.jpg")
     assert on.belongs_to("A0012 1996-im1058_A0012_1996_Feather_1.jpg", "A0012 1996-im1058.jpg")
     assert not on.belongs_to("CE01168_2009_Feather_A.jpg", "CE01168 2008-im2346.jpg")
+    assert on.belongs_to("CE01168_2008_Fragment_1.jpg", "CE01168 2008-im2346.jpg")
+    assert on.fragment_name({"crop_prefix": "CE01168_2008"}, 2) == "CE01168_2008_Fragment_2.jpg"
 
 
 def test_find_date_named_crops(tmp_path):

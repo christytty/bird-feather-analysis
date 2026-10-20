@@ -79,7 +79,8 @@ def main() -> int:
                                 if (res.get(n) or {}).get("success") is False]
     (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
     lx.print_summary(summary, out)
-    print(f"feathers {summary.get('feathers')}, duplicates {summary.get('duplicate_feathers')}, "
+    print(f"feathers {summary.get('feathers')} ({summary.get('feathers_usable')} usable), "
+          f"fragments {summary.get('fragments')}, duplicates {summary.get('duplicate_feathers')}, "
           f"needing review {summary.get('feathers_needing_review')}, mean judge score {summary.get('feather_score_mean')}")
     if failed:
         print("no result for:", failed[:10])

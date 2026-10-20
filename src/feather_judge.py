@@ -6,12 +6,17 @@ Rules for a good segment (the same for any feather on any slide):
   2. no holes or gaps: the mask is one solid piece with nothing of the
      feather missing inside it
   3. exactly one feather, not a fragment, and nothing else inside the mask
+     (glue at the quill is asked about on its own: the catch-all question missed it)
+  4. the whole feather is visible: a feather partly under the board, card, tape
+     or another feather cannot be measured whole (flagged, though its outline may
+     be right)
 
 Rule 2 is measured directly on the mask (holes = background enclosed by the
 mask; parts = separate pieces of the mask). The VLM checks rule 1 per side,
 and rules 2-3 by eye, looking at two panels: LEFT the slide around the
-feather with the mask outline, RIGHT exactly the pixels inside the mask (the
-untrimmed segmentation; the saved crop's bottom trim is not judged here).
+feather with the mask outline, RIGHT exactly the pixels inside the mask. Which
+mask is judged: the saved crop's (bottom trimmed, feather_judge.judge_mask
+"saved") or the untrimmed segmentation ("full").
 
 Decisions (needs_review, segment_ok, the retry in full_run_sharded) use the
 checks themselves. The 1-10 `score` is computed from them with the fixed
@@ -30,10 +35,14 @@ from PIL import Image
 
 SIDES = ("left", "right", "top", "bottom")
 BOOLS = ("holes_or_gaps", "single_feather", "fragment", "other_material_inside", "other_feather_inside")
+# asked by newer prompts only; parsed when present
+OPTIONAL_BOOLS = ("glue_inside",)
+HIDDEN = ("none", "part", "most")   # how much of the feather is hidden under board, card, tape, another feather
 # used when the config has no feather_judge.score (same values as the shipped config)
 DEFAULT_SCORE = {"start": 10, "min": 1, "deduct": {"side_cut": 2, "holes_or_gaps": 3, "fragment": 4,
                                                    "not_single_feather": 4, "other_feather_inside": 3,
-                                                   "other_material_inside": 2}}
+                                                   "other_material_inside": 2, "glue_inside": 2,
+                                                   "hidden_part": 3, "hidden_most": 8}}
 
 
 # ---------------------------------------------------------------- measured on the mask
@@ -58,6 +67,45 @@ def mask_metrics(mask: np.ndarray, min_hole_frac: float = 0.002, min_part_frac: 
     return {"hole_frac": round(float(sum(big)) / (area + sum(big)), 4), "holes": len(big), "mask_parts": parts}
 
 
+def straight_outline(mask: np.ndarray, eps: float = 2.0, min_frac: float = 0.15) -> tuple[float, float]:
+    """Share of the feather's length where its mask outline is ruler-straight: the edge of the
+    board, a card or another feather lying across it (feather outlines are curved and ragged).
+    Measured at half resolution; the saved crop's horizontal bottom trim line is ignored.
+    Returns (total, longest single run), both as shares of the feather's length."""
+    m = cv2.resize(mask.astype(np.uint8), None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not cnts:
+        return 0.0, 0.0
+    c = max(cnts, key=cv2.contourArea)
+    ys, xs = c[:, 0, 1], c[:, 0, 0]
+    length = max(int(ys.max() - ys.min()), int(xs.max() - xs.min()), 1)
+    poly = cv2.approxPolyDP(c, eps, True)[:, 0]
+    total = longest = 0.0
+    for a, b in zip(poly, np.roll(poly, -1, axis=0)):
+        n = float(np.hypot(*(b - a)))
+        if n < min_frac * length:
+            continue
+        if abs(int(a[1]) - int(b[1])) <= 1 and min(a[1], b[1]) >= ys.max() - 2:
+            continue
+        total += n
+        longest = max(longest, n)
+    return round(total / length, 3), round(longest / length, 3)
+
+
+def hidden_level(straight: float, longest: float, rel_area: float | None, cfg: dict) -> str:
+    """'none' | 'part' | 'most' from the straight outline (total and longest single run, shares of
+    the feather's length) and the feather's area relative to the slide's median feather (a mostly
+    covered feather shows only a small piece). A board edge gives one long run; the nearly straight
+    outer vane of a flight feather gives several shorter ones."""
+    h = cfg.get("hidden") or {}
+    if straight < float(h.get("part_frac", 0.45)) or longest < float(h.get("min_longest", 0.2)):
+        return "none"
+    if rel_area is not None and rel_area < float(h.get("most_max_rel_area", 0.6)) \
+            and straight >= float(h.get("most_frac", 0.45)):
+        return "most"
+    return "part"
+
+
 # ---------------------------------------------------------------- what the model sees
 
 def context_panel(slide_bgr: np.ndarray, mask: np.ndarray, cfg: dict) -> Image.Image:
@@ -73,6 +121,16 @@ def context_panel(slide_bgr: np.ndarray, mask: np.ndarray, cfg: dict) -> Image.I
     cnts, _ = cv2.findContours(sub, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)   # outer edges and holes
     cv2.drawContours(left, cnts, -1, (0, 255, 0), max(2, int(min(left.shape[:2]) / 300)))
     right = np.where(sub[:, :, None] > 0, slide_bgr[y0:y1, x0:x1], 0).astype(np.uint8)
+    if cfg.get("enhance_contrast"):
+        # local contrast (CLAHE on lightness), so pale barbs on white card and dark barbs on the
+        # board stand out from the background; the same mapping on both panels
+        lab = cv2.cvtColor(slide_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2LAB)
+        clahe = cv2.createCLAHE(clipLimit=float(cfg.get("contrast_clip", 3.0)), tileGridSize=(8, 8))
+        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+        enh = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        left = enh.copy()
+        cv2.drawContours(left, cnts, -1, (0, 255, 0), max(2, int(min(left.shape[:2]) / 300)))
+        right = np.where(sub[:, :, None] > 0, enh, 0).astype(np.uint8)
     ph = int(cfg.get("panel_height", 900))
 
     def fit(img):
@@ -105,6 +163,8 @@ def derive_score(r: dict, score_cfg: dict | None = None) -> int:
     s -= d["not_single_feather"] * (r.get("single_feather") is False)
     s -= d["other_feather_inside"] * bool(r.get("other_feather_inside"))
     s -= d["other_material_inside"] * bool(r.get("other_material_inside"))
+    s -= d["glue_inside"] * bool(r.get("glue_inside"))
+    s -= d["hidden_part"] * (r.get("hidden") == "part") + d["hidden_most"] * (r.get("hidden") == "most")
     return max(sc["min"], s)
 
 
@@ -125,6 +185,15 @@ def parse(text: str, score_cfg: dict | None = None) -> dict:
         if not isinstance(v, bool):
             return {"status": "model_error", "error": f"{k} must be true|false, got {v!r}"}
         out[k] = v
+    for k in OPTIONAL_BOOLS:
+        if k in d:
+            if not isinstance(d[k], bool):
+                return {"status": "model_error", "error": f"{k} must be true|false, got {d[k]!r}"}
+            out[k] = d[k]
+    if "hidden" in d:
+        if str(d["hidden"]).strip().lower() not in HIDDEN:
+            return {"status": "model_error", "error": f"hidden must be none|part|most, got {d['hidden']!r}"}
+        out["hidden"] = str(d["hidden"]).strip().lower()
     ms = d.get("model_score", d.get("score"))
     out["model_score"] = float(ms) if isinstance(ms, (int, float)) and 1 <= ms <= 10 else None
     notes = str(d.get("notes") or "")
@@ -138,22 +207,100 @@ def _finish(res: dict, score_cfg: dict | None) -> None:
     res["segment_ok"] = not failed_checks(res, prefix="")
 
 
-def judge(client, slide_bgr, mask, crop_bgr, cfg: dict) -> tuple[dict, Image.Image]:
-    """Measures and asks about one feather. Returns (result, the panel image)."""
+_PASS = {"holes_or_gaps": False, "single_feather": True, "fragment": False, "other_feather_inside": False,
+         "other_material_inside": False, "glue_inside": False, "hidden": "none"}
+
+
+def _model_failures(res: dict) -> set[str]:
+    """The checks the model's answer fails (not the mask measurements)."""
+    out = {f"outline_{s}" for s in SIDES if res.get(f"outline_{s}") == "cut"}
+    measured = {"hidden"} if "straight_outline" in res else set()   # not the model's answer
+    return out | {k for k, ok in _PASS.items() if k not in measured and res.get(k) is not None and res.get(k) != ok}
+
+
+def _second_look(client, panel, cfg: dict, res: dict) -> None:
+    """Asks again on the same panel at a smaller size when the first answer
+    fails a check. A check failed only once is set back to passing and listed
+    in `uncertain_checks` (kept for review, not counted as a failure); a check
+    failed both times stays failed. If the second request fails, the first
+    answer stands: nothing is cleared without a second answer."""
+    first = _model_failures(res)
+    res["uncertain_checks"] = []
+    if not first:
+        return
+    scale = float((cfg.get("second_look") or {}).get("scale", 0.8))
+    small = panel.resize((max(1, int(panel.width * scale)), max(1, int(panel.height * scale))), Image.LANCZOS)
+    try:
+        raw2 = client.ask(small, cfg["prompt"], max_tokens=cfg.get("max_tokens", 220))
+    except Exception as exc:  # noqa: BLE001
+        res["second_look"] = f"failed: {type(exc).__name__}"
+        return
+    res2 = parse(raw2, cfg.get("score"))
+    res["second_look"] = (raw2 or "")[:300]
+    if res2.get("status") != "ok":
+        return
+    uncertain = sorted(first - _model_failures(res2))
+    for c in uncertain:
+        res[c] = "complete" if c.startswith("outline_") else _PASS[c]
+    res["sides_cut"] = [s for s in SIDES if res.get(f"outline_{s}") == "cut"]
+    res["uncertain_checks"] = uncertain
+
+
+def judge(client, slide_bgr, mask, crop_bgr, cfg: dict, rel_area: float | None = None,
+          raw_mask: np.ndarray | None = None) -> tuple[dict, Image.Image]:
+    """Measures and asks about one feather. Returns (result, the panel image). For the measured
+    'hidden' check: `raw_mask`, the segmentation before glue/card clean-up (whose cuts add straight
+    edges), and `rel_area`, its area relative to the slide's median feather."""
     metrics = mask_metrics(mask, cfg.get("min_hole_frac", 0.002))
+    if (cfg.get("hidden") or {}).get("enabled"):
+        h = cfg["hidden"]
+        metrics["straight_outline"], metrics["straight_longest"] = straight_outline(
+            raw_mask if raw_mask is not None else mask, float(h.get("eps", 2.0)), float(h.get("min_frac", 0.15)))
+        metrics["hidden"] = hidden_level(metrics["straight_outline"], metrics["straight_longest"], rel_area, cfg)
     panel = context_panel(slide_bgr, mask, cfg)
     try:
         raw = client.ask(panel, cfg["prompt"], max_tokens=cfg.get("max_tokens", 220))
     except Exception as exc:  # noqa: BLE001
         return {"status": "model_error", "error": f"{type(exc).__name__}: {exc}", **metrics}, panel
     res = parse(raw, cfg.get("score"))
-    res.update(metrics)
-    if res["status"] == "ok" and (metrics["holes"] or metrics["mask_parts"] > 1):
-        # measured holes / split mask count as rule-2 failures even if the model missed them
+    res.update(metrics)       # measured 'hidden' replaces the model's answer when enabled
+    if res["status"] == "ok" and (cfg.get("second_look") or {}).get("enabled", False):
+        _second_look(client, panel, cfg, res)
+        _finish(res, cfg.get("score"))
+    fail_frac = float(cfg.get("fail_hole_frac", 0.02))
+    if res["status"] == "ok" and ((metrics["hole_frac"] or 0) >= fail_frac or metrics["mask_parts"] > 1):
+        # a mask in pieces, or measured holes of fail_hole_frac or more, count as rule-2
+        # failures even if the model missed them; smaller measured holes are mostly natural
+        # vane splits (background showing through) and are only recorded
         res["holes_or_gaps"] = True
+    if res["status"] == "ok":
         _finish(res, cfg.get("score"))
     res["raw"] = (raw or "")[:400]
     return res, panel
+
+
+def demote_unsupported(rec: dict, cfg: dict, prefix: str = "judge_") -> None:
+    """Model answers that hand verdicts showed to be noise unless something measured backs them
+    (feather_judge.needs_support): 'holes or gaps' without a measured hole (fail_hole_frac) or a
+    split mask, and 'fragment' on a piece the clean-up did not mark small or narrow. They move
+    to the uncertain checks (listed, not failing) and the score is recomputed."""
+    if rec.get(prefix + "status") != "ok":
+        return
+    need = cfg.get("needs_support", [])
+    moved = []
+    if "holes_or_gaps" in need and rec.get(prefix + "holes_or_gaps") \
+            and (rec.get(prefix + "hole_frac") or 0) < float(cfg.get("fail_hole_frac", 0.02)) \
+            and (rec.get(prefix + "mask_parts") or 1) <= 1:
+        rec[prefix + "holes_or_gaps"] = False
+        moved.append("holes_or_gaps")
+    if "fragment" in need and rec.get(prefix + "fragment") and "possible fragment" not in str(rec.get("postprocess") or ""):
+        rec[prefix + "fragment"] = False
+        moved.append("fragment")
+    if moved:
+        rec[prefix + "uncertain_checks"] = sorted(set(rec.get(prefix + "uncertain_checks") or []) | set(moved))
+        bare = {k[len(prefix):]: v for k, v in rec.items() if k.startswith(prefix)}
+        rec[prefix + "score"] = derive_score(bare, cfg.get("score"))
+        rec[prefix + "segment_ok"] = not failed_checks(bare, prefix="")
 
 
 def failed_checks(rec: dict, prefix: str = "judge_") -> list[str]:
@@ -164,7 +311,7 @@ def failed_checks(rec: dict, prefix: str = "judge_") -> list[str]:
     sides = g("sides_cut")
     if sides:
         why.append("outline cut: " + ",".join(sides if isinstance(sides, list) else [str(sides)]))
-    if g("holes_or_gaps") or (g("holes") or 0) > 0 or (g("mask_parts") or 0) > 1:
+    if g("holes_or_gaps") or (g("mask_parts") or 0) > 1:
         why.append("holes or gaps")
     if g("fragment"):
         why.append("fragment")
@@ -174,6 +321,10 @@ def failed_checks(rec: dict, prefix: str = "judge_") -> list[str]:
         why.append("other feather inside")
     if g("other_material_inside"):
         why.append("non-feather material inside")
+    if g("glue_inside"):
+        why.append("glue inside")
+    if g("hidden") in ("part", "most"):
+        why.append(f"{'partly' if g('hidden') == 'part' else 'mostly'} hidden")
     return why
 
 
@@ -189,11 +340,31 @@ def needs_review(rec: dict) -> str:
     return "; ".join(why)
 
 
+def is_fragment(rec: dict, prefix: str = "judge_") -> bool:
+    """A piece, not a feather: the mask clean-up marked it small or narrow, and
+    the model (on two looks) sees a fragment or not a single feather. Such
+    pieces get no letter or feather ID; they stay as review rows. Without a
+    model answer the piece stays a feather (flagged)."""
+    return ("possible fragment" in str(rec.get("postprocess") or "") and rec.get(prefix + "status") == "ok"
+            and (rec.get(prefix + "fragment") is True or rec.get(prefix + "single_feather") is False))
+
+
+def uncertain_review(rec: dict, prefix: str = "judge_") -> str:
+    """Checks failed on one look only (second_look): listed for review after
+    the confirmed failures, not counted in the score or the retry."""
+    names = {"outline_left": "outline cut: left", "outline_right": "outline cut: right",
+             "outline_top": "outline cut: top", "outline_bottom": "outline cut: bottom",
+             "holes_or_gaps": "holes or gaps", "single_feather": "not a single feather", "fragment": "fragment",
+             "other_feather_inside": "other feather inside", "other_material_inside": "non-feather material inside",
+             "glue_inside": "glue inside", "hidden": "hidden under something"}
+    return "; ".join(names.get(c, c) for c in rec.get(prefix + "uncertain_checks") or [])
+
+
 def slide_checks(records: list[dict]) -> dict:
     """Slide-level view of the per-feather checks and the missed-feather flags
     (what the retired slide judge used to guess from the overlay)."""
-    judged = [r for r in records if r.get("judge_status") == "ok"]
     seg = [r for r in records if r.get("segment_status", "segmented") == "segmented"]
+    judged = [r for r in seg if r.get("judge_status") == "ok"]
     inv = next((r.get("inventory_status") for r in records if r.get("inventory_status")), None)
     scores = [r["judge_score"] for r in judged if isinstance(r.get("judge_score"), (int, float))]
     return {
@@ -201,6 +372,7 @@ def slide_checks(records: list[dict]) -> dict:
         "checks_failed": sum(len(failed_checks(r)) for r in judged),
         "judge_errors": sum(r.get("judge_status") == "model_error" for r in seg),
         "possible_missed": sum(r.get("segment_status") == "possible_missed" for r in records),
+        "fragments": sum(r.get("segment_status") == "fragment" for r in records),
         "all_feathers_covered": {"complete": True, "missed": False}.get(inv),
         "merged_feathers": (any(r.get("judge_single_feather") is False or r.get("judge_other_feather_inside")
                                 for r in judged) if judged else None),

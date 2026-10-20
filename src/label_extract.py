@@ -784,17 +784,18 @@ CREATE TABLE IF NOT EXISTS specimen_labels (
 # The per-feather output table: one row per kept feather crop, with the
 # slide's label fields, the segmentation measurements and the VLM judge.
 FEATHER_TABLE_COLS = [
-    "run_id", "node_id", "file_id", "feather_id", "seq", "segment_status", "duplicate_of", "needs_review",
-    "label_needs_review",
+    "run_id", "node_id", "file_id", "feather_id", "seq", "segment_status", "usable", "excluded_because",
+    "duplicate_of", "needs_review", "label_needs_review",
     "bird_id", "bird_id_status", "bird_id_source", "species", "species_status", "age", "age_status",
     "sex", "sex_status", "year", "month", "day", "date_status", "year_source", "period",
-    "crop", "qc_image", "bbox", "area_px", "length_px", "width_px", "angle_deg", "touches_border",
-    "sam_score", "sam_masks", "postprocess",
+    "crop", "qc_image", "mask_image", "bbox", "area_px", "length_px", "width_px", "angle_deg", "touches_border",
+    "sam_score", "sam_masks", "postprocess", "mask_cleanup",
     # per-feather checks (src/feather_judge.py): score is derived from the checks
     "judge_status", "judge_score", "judge_segment_ok", "judge_sides_cut", "judge_outline_left",
     "judge_outline_right", "judge_outline_top", "judge_outline_bottom", "judge_holes_or_gaps", "judge_holes",
     "judge_hole_frac", "judge_mask_parts", "judge_single_feather", "judge_fragment", "judge_other_feather_inside",
-    "judge_other_material_inside", "judge_model_score", "judge_notes", "judge_error",
+    "judge_other_material_inside", "judge_glue_inside", "judge_hidden", "judge_straight_outline", "judge_straight_longest", "judge_model_score", "judge_notes", "judge_error",
+    "review_uncertain", "judge_uncertain_checks", "repair", "repair_tried",
     # missed feathers (src/feather_inventory.py): slide-level result repeated per row
     "missed_x", "missed_between", "missed_partly_hidden", "inventory_status", "inventory_total",
     "feathers_segmented", "feathers_possibly_missed", "inventory_note", "inventory_image",
@@ -803,6 +804,24 @@ FEATHER_SQL = ("CREATE TABLE IF NOT EXISTS specimen_feathers (\n    "
                + ",\n    ".join(f"{c} TEXT" + (" NOT NULL" if c in ("run_id", "node_id", "file_id", "seq") else "")
                                  for c in FEATHER_TABLE_COLS)
                + ",\n    PRIMARY KEY (run_id, node_id, file_id, seq)\n)")
+
+
+def usable(f: dict) -> tuple[bool, str]:
+    """Is the feather usable for analysis, and if not, why: a segmented feather
+    with an ID that passed its checks and is not a duplicate. Checks failed on
+    one look only (review_uncertain) do not exclude it; label review does not
+    either (it concerns the slide's fields, in label_needs_review)."""
+    status = f.get("segment_status", "segmented")
+    if status != "segmented":
+        return False, {"fragment": "fragment", "possible_missed": "review row: possible missed feather",
+                       "count_unclear": "review row: feather count unclear"}.get(status, str(status))
+    if not f.get("feather_id"):
+        return False, "no feather ID"
+    if f.get("needs_review"):
+        return False, f"check: {f['needs_review']}"
+    if f.get("duplicate_of"):
+        return False, f"duplicate of {f['duplicate_of']}"
+    return True, ""
 
 
 def feather_table_rows(r: "LabelResult", run_id: str = "", node_id: str = "") -> list[dict]:
@@ -824,6 +843,8 @@ def feather_table_rows(r: "LabelResult", run_id: str = "", node_id: str = "") ->
             if c in f and c not in ("bird_id",):
                 v = f[c]
                 row[c] = json.dumps(v) if isinstance(v, (list, dict)) else v
+        ok, why = usable(f)
+        row["usable"], row["excluded_because"] = ("yes" if ok else "no"), why
         rows.append(row)
     return rows
 
@@ -1139,13 +1160,15 @@ def merge_feather_scores(results: list[LabelResult], scores_csv: str | Path) -> 
     return n
 
 
-def write_feathers_csv(results: list[LabelResult], path: Path, run_id: str = "") -> Path:
-    """The per-feather output table (FEATHER_TABLE_COLS), one row per feather."""
+def write_feathers_csv(results: list[LabelResult], path: Path, run_id: str = "",
+                       usable_only: bool = False) -> Path:
+    """The per-feather output table (FEATHER_TABLE_COLS), one row per feather,
+    fragment and review row; `usable_only`: only the feathers usable for analysis."""
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=FEATHER_TABLE_COLS)
         w.writeheader()
         for r in results:
-            w.writerows(feather_table_rows(r, run_id))
+            w.writerows(row for row in feather_table_rows(r, run_id) if not usable_only or row["usable"] == "yes")
     return path
 
 
@@ -1163,10 +1186,14 @@ def append_feathers_csv(r: LabelResult, path: str | Path, run_id: str = "", node
 def bare_result(image_path: str, feathers: list[dict]) -> LabelResult:
     """A slide without a label reading (labels disabled): feathers only."""
     r = LabelResult(str(image_path), filename=parse_filename(Path(image_path).name), node=socket.gethostname())
-    if feathers and not all(f.get("feather_id") for f in feathers):
-        # feather IDs from the file name's ID and year (the label could not be read)
-        ids = assign_feather_ids(r, [f["crop"] for f in feathers], period_of_crop(feathers[0]["crop"]))
-        feathers = [{**f, **i} for f, i in zip(feathers, ids)]
+    seg = segmented(feathers)
+    if seg and not all(f.get("feather_id") for f in seg):
+        # feather IDs from the file name's ID and year (the label could not be read);
+        # fragments and review rows keep no ID
+        ids = assign_feather_ids(r, [f["crop"] for f in seg], period_of_crop(seg[0]["crop"]),
+                                 seqs=[f["seq"] for f in seg])
+        ided = iter([{**f, **i} for f, i in zip(seg, ids)])
+        feathers = [next(ided) if f.get("segment_status", "segmented") == "segmented" else f for f in feathers]
     r.feathers = feathers
     return r
 
@@ -1208,15 +1235,22 @@ def slide_problems(r: LabelResult, gold_row: dict | None, cfg: dict) -> list[dic
             # the inventory's flags: counting overlapping feathers is unreliable, so review only
             out.append({"field": "feathers", "kind": "possible_missed", "got": None, "want": None,
                         "status": f["segment_status"], "note": f.get("needs_review")})
+        elif f.get("segment_status") == "fragment":
+            out.append({"field": f"feather {f.get('seq')}", "kind": "fragment", "got": None, "want": None,
+                        "status": f.get("judge_status"), "note": f.get("needs_review")})
         elif f.get("needs_review"):
             out.append({"field": f"feather {f.get('seq')}", "kind": "feather_check", "got": None, "want": None,
                         "status": f.get("judge_status"), "note": f.get("needs_review")})
+        if f.get("review_uncertain"):
+            out.append({"field": f"feather {f.get('seq')}", "kind": "feather_uncertain", "got": None, "want": None,
+                        "status": f.get("judge_status"), "note": "one look only: " + f["review_uncertain"]})
     want_n = (gold_row or {}).get("feather_count", "").strip()
     if want_n and r.feathers and str(len(segmented(r.feathers))) != want_n:
         out.append({"field": "feathers", "kind": "count", "got": len(segmented(r.feathers)), "want": int(want_n),
                     "status": "segmentation"})
     rank = {"wrong": 0, "missed": 1, "model_error": 2, "count": 3, "flagged_wrong": 4, "conflict": 5,
-            "needs_review": 6, "possible_missed": 7, "feather_check": 8, "filename_fallback": 9, "partial": 10}
+            "needs_review": 6, "possible_missed": 7, "feather_check": 8, "fragment": 8, "filename_fallback": 9, "partial": 10,
+            "feather_uncertain": 11}
     return sorted(out, key=lambda p: rank.get(p["kind"], 9))
 
 
@@ -1249,6 +1283,7 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
         if dup_rows:
             feather_duplicates.write_csv(dup_rows, out / "feather_duplicates.csv")
     write_feathers_csv(results, out / "feathers.csv", out.name)
+    write_feathers_csv(results, out / "feathers_usable.csv", out.name, usable_only=True)
     write_csv(results, out / "labels.csv")
     write_review_csv(results, out / "review.csv")
     write_sqlite(results, out / "labels.sqlite3", out.name, cfg["vlm"]["model"])
@@ -1262,7 +1297,9 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
               if isinstance(f.get("judge_score"), (int, float)) and not isinstance(f.get("judge_score"), bool)]
     summary["feathers_scored"] = len(scored)
     summary["feather_score_mean"] = round(sum(scored) / len(scored), 2) if scored else None
-    summary["feathers_needing_review"] = sum(bool(f.get("needs_review")) for r in results for f in r.feathers)
+    summary["feathers_needing_review"] = sum(bool(f.get("needs_review")) for r in results for f in segmented(r.feathers))
+    summary["fragments"] = sum(f.get("segment_status") == "fragment" for r in results for f in r.feathers)
+    summary["feathers_usable"] = sum(usable(f)[0] for r in results for f in r.feathers)
     if gold and Path(gold).exists():
         summary["gold"] = score_against_gold(results, gold, cfg)
         summary["gold_feather_count"] = score_feather_counts(results, gold)

@@ -343,19 +343,22 @@ def _emit_run_complete(
 
 
 def qa_penalty(res) -> int:
-    """Failed per-feather checks, judge errors and possible missed feathers
-    (src/feather_judge.slide_checks); lower is better. Not a score."""
+    """Failed per-feather checks, judge errors, fragments and possible missed
+    feathers (src/feather_judge.slide_checks); lower is better. Not a score."""
     c = getattr(res, "qa_checks", None) or {}
-    return int(c.get("checks_failed", 0)) + int(c.get("judge_errors", 0)) + 2 * int(c.get("possible_missed", 0))
+    return (int(c.get("checks_failed", 0)) + int(c.get("judge_errors", 0)) + int(c.get("fragments", 0))
+            + 2 * int(c.get("possible_missed", 0)))
 
 
 def should_retry(res) -> bool:
-    """Retry with the broader prompts when any kept feather failed a check or
-    the inventory flags a possibly missed or merged feather."""
+    """Retry with the broader prompts when any kept feather failed a check, a
+    piece was set aside as a fragment, or the inventory flags a possibly
+    missed or merged feather."""
     if not res.success:
         return False
     c = getattr(res, "qa_checks", None) or {}
-    return bool(c.get("feathers_failing") or c.get("possible_missed") or c.get("merged_feathers"))
+    return bool(c.get("feathers_failing") or c.get("fragments") or c.get("possible_missed")
+                or c.get("merged_feathers"))
 
 
 def run_shard(
