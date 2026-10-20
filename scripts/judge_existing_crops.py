@@ -54,6 +54,7 @@ def main() -> int:
             panel.save(qc, quality=85)
             row = {"file_id": n, "seq": lx.seq_letter(i), "crop": cp.name, "match": round(match, 3),
                    "qc_image": str(qc), **{"judge_" + k: v for k, v in res.items() if k != "raw"}}
+            feather_judge.demote_unsupported(row, cfg)       # same rules as the pipeline
             row["needs_review"] = feather_judge.needs_review(row)
             row["review_uncertain"] = feather_judge.uncertain_review(row)
             rows.append(row)
