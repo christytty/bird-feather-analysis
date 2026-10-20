@@ -303,6 +303,18 @@ def demote_unsupported(rec: dict, cfg: dict, prefix: str = "judge_") -> None:
         rec[prefix + "segment_ok"] = not failed_checks(bare, prefix="")
 
 
+def add_cut_sides(rec: dict, sides: list[str], cfg: dict, prefix: str = "judge_") -> None:
+    """Mark sides as cut from a measurement (feather_repair.regrow_check) and recompute the score."""
+    if not sides:
+        return
+    for side in sides:
+        rec[f"{prefix}outline_{side}"] = "cut"
+    rec[prefix + "sides_cut"] = [s for s in SIDES if rec.get(f"{prefix}outline_{s}") == "cut"]
+    bare = {k[len(prefix):]: v for k, v in rec.items() if k.startswith(prefix)}
+    rec[prefix + "score"] = derive_score(bare, cfg.get("score"))
+    rec[prefix + "segment_ok"] = not failed_checks(bare, prefix="")
+
+
 def failed_checks(rec: dict, prefix: str = "judge_") -> list[str]:
     """The checks one feather failed (model answer plus mask measurements);
     keys are judge_* in a feather record, bare in a judge result (prefix='')."""

@@ -132,6 +132,36 @@ def resegment(inter, img: np.ndarray, mask: np.ndarray, others: list[np.ndarray]
     return lbl == 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))   # the largest piece
 
 
+def side_growth(old: np.ndarray, new: np.ndarray, others: np.ndarray) -> dict[str, float]:
+    """New pixels on each side (left/right of the feather's middle) in the middle 15-75% of its
+    length, as a share of the old mask's area there (base and tip left out)."""
+    ys, xs = np.nonzero(old)
+    y0, y1 = ys.min(), ys.max()
+    rows = slice(int(y0 + 0.15 * (y1 - y0)), int(y0 + 0.75 * (y1 - y0)))
+    xc = int(np.median(xs))
+    gain = (new & ~old & ~others)[rows]
+    base = max(1, int(old[rows].sum()))
+    return {"left": round(float(gain[:, :xc].sum()) / base, 3), "right": round(float(gain[:, xc:].sum()) / base, 3)}
+
+
+def regrow_check(inter, img: np.ndarray, mask: np.ndarray, others: list[np.ndarray], cfg: dict) -> dict:
+    """Measured 'outline cut' on the sides: SAM 3 re-segments the feather on a crop (contrast-
+    enhanced by default) with its box widened left and right. A pale vane left outside the mask on
+    the white card, which neither the first pass nor the model sees, makes the new mask grow on
+    that side (hand-checked: 58% on the one such feather, at most 3.6% on good ones). Returns
+    {'regrow_left', 'regrow_right', 'regrow_cut': [sides]}; empty if SAM gives nothing."""
+    new = resegment(inter, img, mask, others, ["left", "right"], {"widen_frac": cfg.get("widen_frac", 0.25)},
+                    enhance=cfg.get("variant", "contrast") == "contrast")
+    if new is None:
+        return {}
+    union = np.zeros_like(mask)
+    for o in others:
+        union |= o
+    g = side_growth(mask, new, union)
+    cut = [s for s in ("left", "right") if g[s] >= float(cfg.get("min_growth", 0.15))]
+    return {"regrow_left": g["left"], "regrow_right": g["right"], "regrow_cut": cut}
+
+
 def candidates(rec: dict, inter, img: np.ndarray, mask: np.ndarray, others: list[np.ndarray],
                cfg: dict) -> list[tuple[str, np.ndarray]]:
     """(name, new full mask) attempts for one feather, cheapest first, within the area limits."""
