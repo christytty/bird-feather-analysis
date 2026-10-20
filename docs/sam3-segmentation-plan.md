@@ -138,3 +138,21 @@ Next:
   holds only the usable ones.
 - **Re-segmenting oversized masks on a crop: not needed.** SAM 3 returned no merged masks in either run;
   the one merged crop came from the clean-up (rule 3, fixed above).
+
+## Open question: keep the quill (stem) or cut to the full vane? (2026-10-20)
+
+**Current behaviour (`crop.cleanup`):** on the white card, each feather is cut where its vane narrows to the quill.
+That removes the glue dots, glue specks and the see-through downy base, but also the quill.
+
+**What prompted the question.** On `AX87168 1990-im2328`, the original April run (`20260426-075440`: detector boxes,
+then SAM 2) followed each quill cleanly through the glue dot and left the glue out. SAM 3's masks include the glue
+dots; the crop only looks clean because the clean-up cuts the base off. So April kept a clean stem and the current
+pipeline does not.
+
+**To decide (with the supervisor):** does the analysis need the quill, e.g. for feather length?
+- **Cut to the full vane** (now): crops without glue or stem.
+- **Keep the stem, cut only the glue:** re-segment the base of feathers with glue, with SAM 3's point prompts
+  (positive points along the quill, negative points on the glue patch found by `src/mask_cleanup.py`), aiming for
+  April-style stems. Not built yet: about an hour of testing on the 16 glue feathers of the hand verdicts, checked
+  against April's masks.
+
