@@ -70,3 +70,19 @@ def test_seed_labels_refuses_a_run_with_another_label_config(tmp_path, monkeypat
     (run / "config_used.json").write_text(json.dumps({**cfg, "vlm": {**cfg["vlm"], "model": "another"}}))
     with pytest.raises(RuntimeError, match="another label config"):
         cc.seed_labels("new", "old")
+
+
+def test_pause_file_holds_a_role_until_removed(tmp_path, monkeypatch):
+    import threading
+
+    from src import node
+
+    pause = tmp_path / "PAUSED"
+    pause.write_text("")
+    monkeypatch.setattr(node, "PAUSE_FILE", pause)
+    done = threading.Event()
+    t = threading.Thread(target=lambda: (node._wait_while_paused("worker", poll=0.01), done.set()))
+    t.start()
+    assert not done.wait(0.1)            # still held while the file exists
+    pause.unlink()
+    assert done.wait(2)                  # starts once it is removed

@@ -7,12 +7,18 @@
     python -m src.node jupyter      # JupyterLab
 
 Settings come from the environment or the repo's .env (see .env.example).
+
+Pause switch: while a file named PAUSED exists in the repo folder, `worker` and
+`vlm-server` wait in a small placeholder process instead of loading any model, and
+start normally once the file is removed. A watchdog that restarts missing
+processes then leaves the node idle. Pause: `touch PAUSED`; resume: `rm PAUSED`.
 """
 from __future__ import annotations
 
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -20,6 +26,17 @@ from dotenv import load_dotenv
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_VLM_MODEL = "mlx-community/Qwen3.8-27B-4bit"
+
+
+PAUSE_FILE = REPO / "PAUSED"
+
+
+def _wait_while_paused(role: str, poll: float = 60.0) -> None:
+    """Holds a starting role while the pause file exists (no model, little memory)."""
+    if PAUSE_FILE.exists():
+        print(f"{role}: paused ({PAUSE_FILE} exists); waiting for it to be removed", flush=True)
+    while PAUSE_FILE.exists():
+        time.sleep(poll)
 
 
 def _exec(argv: list[str]) -> None:
@@ -40,6 +57,7 @@ def redis() -> None:
 
 
 def worker() -> None:
+    _wait_while_paused("worker")
     os.environ.setdefault("FEATHER_VLM_MODEL", DEFAULT_VLM_MODEL)
     if int(os.getenv("WORKER_CONCURRENCY", "1")) > 1:
         # the threads would share one FeatherProcessor: SAM's predictor holds the image it was
@@ -58,6 +76,7 @@ def flower() -> None:
 
 
 def vlm_server() -> None:
+    _wait_while_paused("vlm-server")
     # mlx_vlm.server's own main() forces uvicorn reload=True, which watches the
     # working directory tree; run its app through uvicorn directly instead.
     os.environ["PRELOAD_MODEL"] = os.getenv("FEATHER_VLM_MODEL", DEFAULT_VLM_MODEL)
