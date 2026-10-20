@@ -67,41 +67,52 @@ def mask_metrics(mask: np.ndarray, min_hole_frac: float = 0.002, min_part_frac: 
     return {"hole_frac": round(float(sum(big)) / (area + sum(big)), 4), "holes": len(big), "mask_parts": parts}
 
 
-def straight_outline(mask: np.ndarray, eps: float = 2.0, min_frac: float = 0.15) -> tuple[float, float]:
-    """Share of the feather's length where its mask outline is ruler-straight: the edge of the
-    board, a card or another feather lying across it (feather outlines are curved and ragged).
+def straight_outline(mask: np.ndarray, eps: float = 2.0, min_frac: float = 0.15,
+                     across_deg: float = 25.0) -> dict[str, float]:
+    """Ruler-straight stretches of the mask outline, as shares of the feather's length: where the
+    edge of the board, a card or another feather lies on it (feather outlines are curved and ragged).
     Measured at half resolution; the saved crop's horizontal bottom trim line is ignored.
-    Returns (total, longest single run), both as shares of the feather's length."""
+    across: total of runs at `across_deg` or more to the feather's long axis (board edges cutting
+    across it); along_longest: the longest run along the axis (a covered side; natural straight
+    outer vanes and quill sides give shorter ones); total and longest of all runs."""
     m = cv2.resize(mask.astype(np.uint8), None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
     cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    out = {"total": 0.0, "longest": 0.0, "across": 0.0, "along_longest": 0.0}
     if not cnts:
-        return 0.0, 0.0
+        return out
     c = max(cnts, key=cv2.contourArea)
     ys, xs = c[:, 0, 1], c[:, 0, 0]
     length = max(int(ys.max() - ys.min()), int(xs.max() - xs.min()), 1)
+    py, px = np.nonzero(m)
+    axis = np.linalg.eigh(np.cov(np.vstack([px, py]).astype(float)))[1][:, -1] if len(px) > 2 else np.array([0.0, 1.0])
     poly = cv2.approxPolyDP(c, eps, True)[:, 0]
-    total = longest = 0.0
     for a, b in zip(poly, np.roll(poly, -1, axis=0)):
         n = float(np.hypot(*(b - a)))
         if n < min_frac * length:
             continue
         if abs(int(a[1]) - int(b[1])) <= 1 and min(a[1], b[1]) >= ys.max() - 2:
             continue
-        total += n
-        longest = max(longest, n)
-    return round(total / length, 3), round(longest / length, 3)
+        share = n / length
+        ang = float(np.degrees(np.arccos(min(1.0, abs(float((b - a) / n @ axis))))))
+        out["total"] += share
+        out["longest"] = max(out["longest"], share)
+        if ang >= across_deg:
+            out["across"] += share
+        else:
+            out["along_longest"] = max(out["along_longest"], share)
+    return {k: round(v, 3) for k, v in out.items()}
 
 
-def hidden_level(straight: float, longest: float, rel_area: float | None, cfg: dict) -> str:
-    """'none' | 'part' | 'most' from the straight outline (total and longest single run, shares of
-    the feather's length) and the feather's area relative to the slide's median feather (a mostly
-    covered feather shows only a small piece). A board edge gives one long run; the nearly straight
-    outer vane of a flight feather gives several shorter ones."""
+def hidden_level(straight: dict, rel_area: float | None, cfg: dict) -> str:
+    """'none' | 'part' | 'most' from the straight outline (straight_outline) and the feather's area
+    relative to the slide's median feather (a mostly covered feather shows only a small piece).
+    Hidden: straight runs across the feather add up to `across_frac`, or one run along it reaches
+    `along_frac` (checked by eye on the 100-slide run: 11 of 12 hidden feathers, none of the
+    straight outer vanes or quills)."""
     h = cfg.get("hidden") or {}
-    if straight < float(h.get("part_frac", 0.45)) or longest < float(h.get("min_longest", 0.2)):
+    if straight["across"] < float(h.get("across_frac", 0.2)) and straight["along_longest"] < float(h.get("along_frac", 0.33)):
         return "none"
-    if rel_area is not None and rel_area < float(h.get("most_max_rel_area", 0.6)) \
-            and straight >= float(h.get("most_frac", 0.45)):
+    if rel_area is not None and rel_area < float(h.get("most_max_rel_area", 0.6)):
         return "most"
     return "part"
 
@@ -254,9 +265,11 @@ def judge(client, slide_bgr, mask, crop_bgr, cfg: dict, rel_area: float | None =
     metrics = mask_metrics(mask, cfg.get("min_hole_frac", 0.002))
     if (cfg.get("hidden") or {}).get("enabled"):
         h = cfg["hidden"]
-        metrics["straight_outline"], metrics["straight_longest"] = straight_outline(
-            raw_mask if raw_mask is not None else mask, float(h.get("eps", 2.0)), float(h.get("min_frac", 0.15)))
-        metrics["hidden"] = hidden_level(metrics["straight_outline"], metrics["straight_longest"], rel_area, cfg)
+        st = straight_outline(raw_mask if raw_mask is not None else mask, float(h.get("eps", 2.0)),
+                              float(h.get("min_frac", 0.15)), float(h.get("across_deg", 25.0)))
+        metrics.update({"straight_outline": st["total"], "straight_longest": st["longest"],
+                        "straight_across": st["across"], "straight_along": st["along_longest"]})
+        metrics["hidden"] = hidden_level(st, rel_area, cfg)
     panel = context_panel(slide_bgr, mask, cfg)
     try:
         raw = client.ask(panel, cfg["prompt"], max_tokens=cfg.get("max_tokens", 220))

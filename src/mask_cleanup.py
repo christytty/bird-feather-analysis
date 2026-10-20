@@ -117,15 +117,23 @@ def vane_base_row(img: np.ndarray, mask: np.ndarray, cfg: dict) -> int | None:
             break
     if row is None:
         return None
-    cut = int(y0 + row)
-    # only on the card: the slide just outside the feather below the cut must be light
-    band = np.zeros(mask.shape, bool)
-    band[cut:y1 + 1, max(0, xs.min() - 40):xs.max() + 41] = True
-    ring = band & ~(cv2.dilate(mask.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0)
-    if ring.sum() < 200:
-        return None
-    light = float(np.median(cv2.cvtColor(img, cv2.COLOR_BGR2LAB)[..., 0][ring]))
-    return cut if light >= float(cfg.get("card_min_lightness", 150)) else None
+    # only on the card, never above it: a gradually tapering vane narrows while still on the black
+    # board, where nothing shows through. Coming down from the narrowing, find the first rows where
+    # the slide just outside the feather is light card and cut no higher than that.
+    L = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)[..., 0]
+    near = cv2.dilate(mask.astype(np.uint8), np.ones((61, 61), np.uint8)) > 0
+    ring = near & ~(cv2.dilate(mask.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0)
+    light_min = float(cfg.get("card_min_lightness", 150))
+    xc = int(np.median(xs))
+    card_rows = []
+    for y in range(y0 + row, y1 + 1):          # card on either side (a board edge often runs diagonally)
+        sides = [L[y][:xc][ring[y][:xc]], L[y][xc:][ring[y][xc:]]]
+        card_rows.append(any(len(v) >= 10 and float(np.median(v)) >= light_min for v in sides))
+    card_rows = np.array(card_rows)
+    for i in range(len(card_rows) - run):
+        if card_rows[i:i + run].all():
+            return int(y0 + row + i)
+    return None
 
 
 def clean(img: np.ndarray, mask: np.ndarray, cfg: dict) -> tuple[np.ndarray, int | None, list[str]]:

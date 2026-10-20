@@ -120,14 +120,14 @@
       "max_per_slide": 6
     },
     "hidden": {
-      "_comment": "Measured, not asked: a feather partly under the board, a card or another feather has a ruler-straight stretch of outline (feather_judge.straight_outline: share of its length, at `eps` px). From part_frac it is 'part' hidden; when also smaller than most_max_rel_area of the slide's median feather, 'most'. Deducts score.hidden_part / hidden_most and fails the check.",
+      "_comment": "Measured, not asked: a feather partly under the board, a card or another feather has ruler-straight stretches of outline (feather_judge.straight_outline, at `eps` px). Hidden when the runs crossing the feather (across_deg or more to its long axis) add up to across_frac of its length, or one run along it reaches along_frac (shorter runs along it are natural straight outer vanes and quill sides); 'most' when it is also smaller than most_max_rel_area of the slide's median feather. Deducts score.hidden_part / hidden_most and fails the check.",
       "enabled": true,
       "eps": 2.0,
       "min_frac": 0.15,
-      "part_frac": 0.45,
-      "most_frac": 0.45,
       "most_max_rel_area": 0.6,
-      "min_longest": 0.2
+      "across_deg": 25.0,
+      "across_frac": 0.2,
+      "along_frac": 0.33
     },
     "needs_support": [
       "holes_or_gaps",

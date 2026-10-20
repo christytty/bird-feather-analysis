@@ -118,8 +118,7 @@ def _rehide(run: str, x: dict) -> str:
     feather = make_feather(img, raw, float(seg_cfg["crop"].get("trim_bottom_frac", 0.12)), 0,
                            {**(seg_cfg["crop"].get("cleanup") or {}), "enabled": True})
     med = fdf[fdf.file_id == f.file_id].area_px.median()
-    t, l = fj.straight_outline(raw)
-    level = fj.hidden_level(t, l, raw.sum() / med if med else None, jcfg)
+    level = fj.hidden_level(fj.straight_outline(raw), raw.sum() / med if med else None, jcfg)
     m = fj.mask_metrics(feather["full_mask"], jcfg.get("min_hole_frac", 0.002))
     need = jcfg.get("needs_support", [])
     items = []
