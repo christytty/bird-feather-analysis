@@ -167,14 +167,18 @@ def test_straight_outline_and_hidden_level():
     ragged[((xx - 100 + wobble) / 60.0) ** 2 + ((yy - 200) / 180.0) ** 2 <= 1] = True
     cut = ragged.copy()
     cut[:, 110:] = False                                                            # a board edge down its length
-    (t0, l0), (t1, l1) = fj.straight_outline(ragged), fj.straight_outline(cut)
-    assert t0 < 0.2 and t1 >= 0.45 and l1 >= 0.2
+    s0, s1 = fj.straight_outline(ragged), fj.straight_outline(cut)
+    assert s0["total"] < 0.2 and s1["along_longest"] >= 0.33          # a board edge along the whole side
+    across = ragged.copy()
+    across[:120, :] = False                                           # a board edge across the tip
+    s2 = fj.straight_outline(across)
+    assert s2["across"] >= 0.2
     cfg = {"hidden": {}}
-    assert fj.hidden_level(t0, l0, 1.0, cfg) == "none"
-    assert fj.hidden_level(t1, l1, 1.0, cfg) == "part"
-    assert fj.hidden_level(t1, l1, 0.3, cfg) == "most"
-    assert fj.hidden_level(0.5, 0.19, 1.0, cfg) == "none"     # several short straight runs: a vane edge
-
+    assert fj.hidden_level(s0, 1.0, cfg) == "none"
+    assert fj.hidden_level(s1, 1.0, cfg) == "part" and fj.hidden_level(s2, 1.0, cfg) == "part"
+    assert fj.hidden_level(s1, 0.3, cfg) == "most"
+    vane = {"total": 0.5, "longest": 0.29, "across": 0.0, "along_longest": 0.29}   # straight outer vane edges
+    assert fj.hidden_level(vane, 0.55, cfg) == "none"
 
 def test_model_only_holes_and_fragments_need_support():
     from src import feather_judge as fj
