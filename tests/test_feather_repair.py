@@ -38,3 +38,24 @@ def test_fill_holes():
     m[20:25, 20:25] = False
     filled = fr.fill_holes(m)
     assert filled is not None and filled[22, 22] and filled.sum() == 40 * 30
+
+
+def test_side_growth_counts_new_pixels_per_side_and_skips_neighbours():
+    old = np.zeros((200, 100), bool)
+    old[20:180, 40:60] = True
+    new = old.copy()
+    new[20:180, 10:40] = True                  # grew left (a pale vane)
+    others = np.zeros_like(old)
+    others[20:180, 60:90] = True
+    new |= others                              # the neighbour's pixels never count
+    g = fr.side_growth(old, new, others)
+    assert g["left"] > 1.0 and g["right"] == 0.0
+
+
+def test_measured_cut_sides_fail_the_outline_check():
+    from src import feather_judge as fj
+
+    rec = {**_rec(), "judge_outline_left": "complete", "judge_outline_right": "complete",
+           "judge_outline_top": "complete", "judge_outline_bottom": "complete", "judge_score": 10}
+    fj.add_cut_sides(rec, ["left"], {})
+    assert fj.failed_checks(rec) == ["outline cut: left"] and rec["judge_score"] == 8
