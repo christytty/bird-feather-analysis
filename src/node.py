@@ -41,6 +41,11 @@ def redis() -> None:
 
 def worker() -> None:
     os.environ.setdefault("FEATHER_VLM_MODEL", DEFAULT_VLM_MODEL)
+    if int(os.getenv("WORKER_CONCURRENCY", "1")) > 1:
+        # the threads would share one FeatherProcessor: SAM's predictor holds the image it was
+        # set to, so two slides at once can get each other's masks. For more throughput start a
+        # second worker process instead (its own models): FEATHER_WORKER_NAME=feather2@%h.
+        raise SystemExit("WORKER_CONCURRENCY > 1 is unsafe (shared SAM state); start a second worker process")
     _exec([sys.executable, "-m", "celery", "-A", "src.celery_app", "worker", "--pool=threads",
            f"--concurrency={os.getenv('WORKER_CONCURRENCY', '1')}", "--without-mingle",
            "--loglevel=INFO", f"--hostname={os.getenv('FEATHER_WORKER_NAME', 'feather@%h')}"])
