@@ -185,10 +185,46 @@ def choose(kind: str, n: int = 10, seed: int = 1, match: list[str] | None = None
     return random.Random(seed).sample(names, min(n, len(names)))
 
 
+def seed_labels(run_id: str, from_run: str, names: list[str] | None = None) -> dict:
+    """Copies an earlier run's label results (labels/<stem>.json, .date.json) into this run's
+    output folder on every node, so the workers reuse them instead of reading the labels again
+    (src/label_extract.extract_for_pipeline: reused only from the same extractor version and
+    without model errors). Refused unless the earlier run used the current label config."""
+    import tarfile
+    import tempfile
+
+    from src import label_extract as lx
+
+    used = REPO / "data" / "label_runs" / from_run / "config_used.json"
+    if not used.exists() or json.loads(used.read_text()) != lx.load_config():
+        raise RuntimeError(f"{from_run} used another label config: labels must be read again")
+    src = REPO / "data" / "sample_runs" / from_run / "labels"
+    stems = {Path(n).stem for n in names} if names else None
+    files = [p for p in src.glob("*.json") if stems is None or p.name.split(".")[0] in stems]
+    tmp = Path(tempfile.mkstemp(suffix=".tar")[1])
+    with tarfile.open(tmp, "w") as tf:
+        for p in files:
+            tf.add(p, arcname=p.name)
+    env = _env()
+    key = env.get("FEATHER_CONTROL_SSH_KEY", DEFAULT_KEY)
+    user = env.get("FEATHER_CONTROL_SSH_USER") or env.get("FEATHER_SSH_USER", "")
+    dest = f"{remote_repo()}/data/runs/{run_id}/processed/labels"
+    out = {}
+    for h in hosts():
+        with open(tmp, "rb") as fh:
+            p = subprocess.run(["ssh", "-o", "BatchMode=yes", "-i", key, "-o", "IdentitiesOnly=yes",
+                                f"{user}@{h}" if user else h, f"mkdir -p {dest} && tar xf - -C {dest} && ls {dest} | wc -l"],
+                               stdin=fh, capture_output=True, text=True, timeout=300)
+        out[h] = (p.stdout.strip() or p.stderr.strip())[:80]
+    tmp.unlink()
+    return {"files": len(files), "nodes": out}
+
+
 def launch_run(names: list[str], run_id: str, upload: bool = True, timeout_h: float | None = None,
-               dry_run: bool = False) -> dict:
+               dry_run: bool = False, reuse_labels_from: str | None = None) -> dict:
     """Starts scripts/run_slice.py for `names` as a detached process. Returns
-    the run record (also written to data/run_control/<run_id>.json)."""
+    the run record (also written to data/run_control/<run_id>.json). `reuse_labels_from`:
+    an earlier run whose label results the workers reuse (seed_labels)."""
     CONTROL.mkdir(parents=True, exist_ok=True)
     if _record(run_id).exists() and is_running(run_id):
         raise RuntimeError(f"{run_id} is already running")
@@ -205,6 +241,8 @@ def launch_run(names: list[str], run_id: str, upload: bool = True, timeout_h: fl
            "estimate_h": round(est_h, 2)}
     if dry_run:
         return rec
+    if reuse_labels_from:
+        rec["labels_reused_from"] = {"run": reuse_labels_from, **seed_labels(run_id, reuse_labels_from, names)}
     env = {**os.environ}
     env.setdefault("FEATHER_SSH_KEY", _env().get("FEATHER_CONTROL_SSH_KEY", DEFAULT_KEY))
     with open(log, "w") as fh:

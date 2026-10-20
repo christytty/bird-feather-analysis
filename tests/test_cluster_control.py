@@ -53,3 +53,20 @@ def test_cleanup_refuses_odd_run_ids_and_waits_for_drive(monkeypatch):
     monkeypatch.setattr(cc, "verify_drive_copy", lambda run_id: (False, "missing on Drive"))
     res = cc.cleanup_node_outputs("slice100-x")
     assert res["deleted"] is False and "missing on Drive" in res["reason"] and calls == []   # nothing touched
+
+
+def test_seed_labels_refuses_a_run_with_another_label_config(tmp_path, monkeypatch):
+    import json
+
+    import pytest
+
+    from src import cluster_control as cc
+    from src import label_extract as lx
+
+    monkeypatch.setattr(cc, "REPO", tmp_path)
+    run = tmp_path / "data" / "label_runs" / "old"
+    run.mkdir(parents=True)
+    cfg = lx.load_config()
+    (run / "config_used.json").write_text(json.dumps({**cfg, "vlm": {**cfg["vlm"], "model": "another"}}))
+    with pytest.raises(RuntimeError, match="another label config"):
+        cc.seed_labels("new", "old")
