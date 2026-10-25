@@ -131,7 +131,7 @@
   "filename_fallback": true,
   "partial_min_confidence": 0.8,
   "handwriting": {
-    "_comment": "Check during label reading (label_extract.check_handwriting): one question per region, label strip and date corner. On for the 2026-10-25 sample run to compare with the hand check (data/review/label_handwriting_slice100.csv, which wins in the tables; the model's answer is kept as handwritten_model).",
+    "_comment": "Check during label reading (label_extract.check_handwriting): one question per region, label strip and date corner. Tested on the 100-slide sample slice100-20261025b: agreed with a hand check on all 100 slides (3 handwritten, 97 not). A hand-check CSV still wins in the tables; the model's answer is kept as handwritten_model.",
     "enabled": true,
     "regions": [
       [
