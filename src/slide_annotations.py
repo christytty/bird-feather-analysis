@@ -84,6 +84,8 @@ def annotate(results: list, all_names: list[str] | None = None, handwriting: dic
         r.extra["photos_same_year"] = n
         r.extra["multiple_photos_same_year"] = (n > 1) if n is not None else None
         h = hw.get(r.file_id)
+        if r.extra.get("handwriting_source") == "model":     # keep the model's answer next to a hand check
+            r.extra["handwritten_model"] = r.extra.get("handwritten", "")
         if h is not None:      # a hand check overrides the model's handwriting check
             r.extra["handwritten"] = h.get("handwritten") or ""
             r.extra["handwritten_fields"] = h.get("fields") or ""

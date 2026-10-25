@@ -131,8 +131,8 @@
   "filename_fallback": true,
   "partial_min_confidence": 0.8,
   "handwriting": {
-    "_comment": "Optional check during label reading (label_extract.check_handwriting): one question per region, label strip and date corner. Off until a sample run confirms it against a hand check (scripts/rebuild_run.py --handwriting takes a hand-check CSV meanwhile).",
-    "enabled": false,
+    "_comment": "Check during label reading (label_extract.check_handwriting): one question per region, label strip and date corner. On for the 2026-10-25 sample run to compare with the hand check (data/review/label_handwriting_slice100.csv, which wins in the tables; the model's answer is kept as handwritten_model).",
+    "enabled": true,
     "regions": [
       [
         0.0,

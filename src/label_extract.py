@@ -184,7 +184,7 @@ class LabelResult:
         out["feather_ids"] = ";".join(f["feather_id"] for f in seg if f.get("feather_id"))
         out["possible_missed"] = sum(f.get("segment_status") == "possible_missed" for f in self.feathers)
         for k in ("label_problems", "label_note", "photos_same_year", "multiple_photos_same_year", "handwritten",
-                  "handwritten_fields"):
+                  "handwritten_fields", "handwritten_model"):
             out[k] = self.extra.get(k)
         return out
 

@@ -140,17 +140,22 @@ def vane_base_row(img: np.ndarray, mask: np.ndarray, cfg: dict) -> int | None:
 
 def calamus_row(mask: np.ndarray, cfg: dict) -> int | None:
     """Top of the bare quill (calamus) below the vane: coming down from the middle, the first
-    sustained stretch where the mask is no wider than `max_width_frac` of the vane's typical
-    width. The analysis uses the vane only, so everything below is cut on every feather
-    (board or card). A gradually tapering vane stays wider than that until the quill."""
+    sustained stretch where the mask is no wider than the quill itself (`quill_factor` times the
+    narrow widths found in the bottom quarter of the mask, at most `max_width_frac` of the vane's
+    typical width). The analysis uses the vane only, so everything below is cut on every feather.
+    Measuring the quill, not a fixed share of the vane, keeps narrow lower vanes and gradually
+    tapering feathers whole and still finds a quill that is wide for its feather."""
     ys, _ = np.nonzero(mask)
     y0, y1 = ys.min(), ys.max()
     h = y1 - y0 + 1
     width = mask[y0:y1 + 1].sum(axis=1).astype(float)
     width = np.convolve(np.pad(width, 4, mode="edge"), np.ones(9) / 9, mode="valid")
     vane = float(np.median(width[h // 4:h // 2]))
+    base = width[int(0.75 * h):]
+    quill = float(np.percentile(base[base > 0], 20)) if (base > 0).any() else 0.0
+    limit = min(float(cfg.get("quill_factor", 1.6)) * quill, float(cfg.get("max_width_frac", 0.35)) * vane)
     run = max(3, int(float(cfg.get("run_frac", 0.015)) * h))
-    narrow = width <= float(cfg.get("max_width_frac", 0.15)) * vane
+    narrow = width <= limit
     for i in range(h // 2, h - run):
         if narrow[i:i + run].all():
             return int(y0 + i)
