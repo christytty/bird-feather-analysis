@@ -72,6 +72,11 @@
         "run_frac": 0.015,
         "search_frac": 0.4,
         "card_min_lightness": 150
+      },
+      "calamus": {
+        "enabled": true,
+        "max_width_frac": 0.15,
+        "run_frac": 0.015
       }
     }
   },

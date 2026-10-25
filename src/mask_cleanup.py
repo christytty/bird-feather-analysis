@@ -11,6 +11,8 @@ part of the glue dot. Two measurements find it:
   neck     going up from the bottom, the mask goes wide (glue dot), narrow (bare quill),
            wide (vane). A narrow quill with a much wider blob below it is cut at its
            narrowest row. This catches glue too translucent for the texture test.
+  calamus  the analysis uses the vane only: the bare quill below it is cut on every feather
+           (crop.cleanup.calamus).
   vane     on the white card the downy lower vane is see-through, and the quill carries a
   base     translucent collar and glue specks: there the feather is cut where its vane
            narrows below half its typical width (coming down from the middle). On the black
@@ -136,6 +138,25 @@ def vane_base_row(img: np.ndarray, mask: np.ndarray, cfg: dict) -> int | None:
     return None
 
 
+def calamus_row(mask: np.ndarray, cfg: dict) -> int | None:
+    """Top of the bare quill (calamus) below the vane: coming down from the middle, the first
+    sustained stretch where the mask is no wider than `max_width_frac` of the vane's typical
+    width. The analysis uses the vane only, so everything below is cut on every feather
+    (board or card). A gradually tapering vane stays wider than that until the quill."""
+    ys, _ = np.nonzero(mask)
+    y0, y1 = ys.min(), ys.max()
+    h = y1 - y0 + 1
+    width = mask[y0:y1 + 1].sum(axis=1).astype(float)
+    width = np.convolve(np.pad(width, 4, mode="edge"), np.ones(9) / 9, mode="valid")
+    vane = float(np.median(width[h // 4:h // 2]))
+    run = max(3, int(float(cfg.get("run_frac", 0.015)) * h))
+    narrow = width <= float(cfg.get("max_width_frac", 0.15)) * vane
+    for i in range(h // 2, h - run):
+        if narrow[i:i + run].all():
+            return int(y0 + i)
+    return None
+
+
 def clean(img: np.ndarray, mask: np.ndarray, cfg: dict) -> tuple[np.ndarray, int | None, list[str]]:
     """(cleaned mask, row the mask was cut at or None, notes). The cleaned mask never grows."""
     ys, _ = np.nonzero(mask)
@@ -161,6 +182,12 @@ def clean(img: np.ndarray, mask: np.ndarray, cfg: dict) -> tuple[np.ndarray, int
         if row is not None:
             cut = row if cut is None else min(cut, row)
             notes.append("glue dot below the quill neck")
+    cal = cfg.get("calamus") or {}
+    if cal.get("enabled"):
+        row = calamus_row(mask, cal)
+        if row is not None and (cut is None or row < cut):
+            cut = row
+            notes.append("calamus cut (vane only)")
     vb = cfg.get("vane_base") or {}
     if vb.get("enabled", True):
         row = vane_base_row(img, mask, vb)
