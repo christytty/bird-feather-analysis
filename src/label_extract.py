@@ -677,6 +677,32 @@ def check_against_filename(result: LabelResult) -> None:
     apply_filename(result, {})
 
 
+def check_handwriting(client, image: Image.Image, hcfg: dict, cfg: dict) -> dict:
+    """Asks whether any label text is handwritten (written, corrected or crossed out by hand),
+    on each region in hcfg['regions'] (label strip, date corner). Returns extra columns:
+    handwritten 'yes'|'no'|'' (unknown: the request failed), handwritten_fields, label_note."""
+    found, fields, notes, failed = False, [], [], False
+    for region in hcfg.get("regions", []):
+        crop = crop_field(image, region, cfg["vlm"].get("crop_max_side", 1024))
+        try:
+            text = client.ask(crop, hcfg["prompt"], max_tokens=int(hcfg.get("max_tokens", 120)))
+            m = re.search(r"\{.*\}", text or "", re.S)
+            d = json.loads(m.group(0)) if m else None
+            if not isinstance(d, dict) or not isinstance(d.get("handwritten"), bool):
+                raise ValueError("no handwriting answer")
+        except Exception:  # noqa: BLE001
+            failed = True
+            continue
+        if d.get("handwritten") is True:
+            found = True
+            fields += [str(x) for x in d.get("fields") or []]
+            if d.get("notes"):
+                notes.append(str(d["notes"]))
+    return {"handwritten": "yes" if found else ("" if failed else "no"),
+            "handwritten_fields": ", ".join(dict.fromkeys(fields)), "label_note": "; ".join(notes),
+            "handwriting_source": "model"}
+
+
 def extract(image_path: str | Path, cfg: dict | None = None, client: VLMClient | None = None,
             fields: list[str] | None = None, evidence_dir: str | Path | None = None) -> LabelResult:
     cfg = cfg or load_config()
@@ -692,6 +718,8 @@ def extract(image_path: str | Path, cfg: dict | None = None, client: VLMClient |
         if spec:
             result.fields[name] = read_field(client, image, name, spec, cfg, ev_dir)
     apply_filename(result, cfg)
+    if (cfg.get("handwriting") or {}).get("enabled") and fields is None:
+        result.extra.update(check_handwriting(client, image, cfg["handwriting"], cfg))
     result.seconds = time.monotonic() - t0
     result.model = getattr(client, "model_name", "")
     result.node = socket.gethostname()

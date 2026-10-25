@@ -5,7 +5,8 @@
                            source "same_bird"). Age is never inferred: it changes between years.
   photos_same_year         how many slides of the collection have this slide's file-name bird ID and
                            year (the convention the file names follow); multiple_photos_same_year > 1.
-  handwritten              whether any label field is handwritten (from a check, see below).
+  handwritten              whether any label text is handwritten: from the model check during label
+                           reading (label_fields.json "handwriting"), or a hand-check CSV, which wins.
   label_problems           every reason to be careful with this slide's label, in words.
 
 Bird ID for grouping is the label's value when it is readable, never a partly visible or
@@ -82,10 +83,14 @@ def annotate(results: list, all_names: list[str] | None = None, handwriting: dic
         n = counts.get(k) if (k and all_names) else None
         r.extra["photos_same_year"] = n
         r.extra["multiple_photos_same_year"] = (n > 1) if n is not None else None
-        h = hw.get(r.file_id) or {}
-        r.extra["handwritten"] = h.get("handwritten") or ""
-        r.extra["handwritten_fields"] = h.get("fields") or ""
-        r.extra["label_note"] = h.get("note") or ""
+        h = hw.get(r.file_id)
+        if h is not None:      # a hand check overrides the model's handwriting check
+            r.extra["handwritten"] = h.get("handwritten") or ""
+            r.extra["handwritten_fields"] = h.get("fields") or ""
+            r.extra["label_note"] = h.get("note") or ""
+            r.extra["handwriting_source"] = h.get("source") or "hand check"
+        for k in ("handwritten", "handwritten_fields", "label_note"):
+            r.extra.setdefault(k, "")
         problems = []
         for name, f in r.fields.items():
             if f.status in PROBLEM_WORDS and f.status != "not_found":

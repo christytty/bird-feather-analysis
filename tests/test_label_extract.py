@@ -340,3 +340,21 @@ def test_feather_ids_use_full_date_for_same_year_slides(tmp_path):
     # the sibling's date is unknown, so it might be the same day -> image number
     assert a.feathers[0]["feather_id"] == "BB17692H_19980612-im0513_A"
     assert b.feathers[1]["feather_id"] == "BB17692H_1998-im0514_B"
+
+
+def test_handwriting_check_flags_any_region_with_handwriting(img):
+    class Client:
+        def __init__(self, answers):
+            self.answers = list(answers)
+
+        def ask(self, image, prompt, timeout=None, max_tokens=None):
+            return self.answers.pop(0)
+
+    cfg = lx.load_config()
+    h = {**cfg["handwriting"], "enabled": True}
+    out = lx.check_handwriting(Client(['{"handwritten": false, "fields": [], "notes": "ok"}',
+                                       '{"handwritten": true, "fields": ["date"], "notes": "date overwritten"}']),
+                               img, h, cfg)
+    assert out["handwritten"] == "yes" and out["handwritten_fields"] == "date" and "overwritten" in out["label_note"]
+    out = lx.check_handwriting(Client(['{"handwritten": false}', "garbled"]), img, h, cfg)
+    assert out["handwritten"] == ""          # one region unanswered: unknown, not 'no'

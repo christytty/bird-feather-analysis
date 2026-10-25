@@ -129,5 +129,25 @@
     0.04
   ],
   "filename_fallback": true,
-  "partial_min_confidence": 0.8
+  "partial_min_confidence": 0.8,
+  "handwriting": {
+    "_comment": "Optional check during label reading (label_extract.check_handwriting): one question per region, label strip and date corner. Off until a sample run confirms it against a hand check (scripts/rebuild_run.py --handwriting takes a hand-check CSV meanwhile).",
+    "enabled": false,
+    "regions": [
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.18
+      ],
+      [
+        0.6,
+        0.84,
+        1.0,
+        1.0
+      ]
+    ],
+    "max_tokens": 120,
+    "prompt": "This is part of a printed specimen label on a scanned feather slide. Is any text in it handwritten (written by hand with a pen or marker, including handwritten corrections, crossed-out printed text, or added notes), rather than printed? Reply with only JSON: {\"handwritten\": true|false, \"fields\": [which parts: bird_id, species, age, sex, date, note], \"notes\": \"<at most 15 words: what is handwritten, or ok>\"}"
+  }
 }
